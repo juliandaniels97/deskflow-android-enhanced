@@ -72,6 +72,9 @@ class VirtualFinger(
 
   private var upRequested = false
 
+  /** Minimal duration of a movement segment, higher = smoother but slower */
+  @Volatile var minSegmentMs: Long = MIN_SEGMENT_MS
+
   /** Invoked once the finger has been fully lifted (or was cancelled). */
   var onLifted: (() -> Unit)? = null
 
@@ -160,7 +163,9 @@ class VirtualFinger(
       distance >= 1f -> {
         // Move towards the target, finger stays down.
         val duration =
-          (distance * MS_PER_PX).toLong().coerceIn(MIN_SEGMENT_MS, MAX_SEGMENT_MS)
+          (distance * MS_PER_PX)
+            .toLong()
+            .coerceIn(minSegmentMs, maxOf(MAX_SEGMENT_MS, minSegmentMs))
         dispatchSegment(PointF(target.x, target.y), duration, willContinue = true)
       }
 

@@ -104,6 +104,10 @@ internal fun SettingsScreenRoute(appState: IAppState) {
       ScrollSettings(
         invertY = input.scrollInvert,
         invertX = input.scrollInvertX,
+        mode = input.scrollMode,
+        smoothingPercent =
+          if (input.scrollSmoothing <= 0) ScrollSettings.DEFAULT_SMOOTHING_PERCENT
+          else input.scrollSmoothing - 1,
         speedPercent =
           if (input.scrollSpeedPercent <= 0) ScrollSettings.DEFAULT_SPEED_PERCENT
           else input.scrollSpeedPercent,
@@ -123,6 +127,9 @@ internal fun SettingsScreenRoute(appState: IAppState) {
             input = inputConfig {
               scrollInvert = newScrollSettings.invertY
               scrollInvertX = newScrollSettings.invertX
+              scrollMode = newScrollSettings.mode
+              // Stored as percent + 1, so 0 means "not set"
+              scrollSmoothing = newScrollSettings.smoothingPercent + 1
               scrollSpeedPercent = newScrollSettings.speedPercent
             }
           }
@@ -140,10 +147,14 @@ internal fun SettingsScreenRoute(appState: IAppState) {
 data class ScrollSettings(
   val invertY: Boolean = false,
   val invertX: Boolean = false,
+  /** See `ScrollMode` */
+  val mode: Int = 0,
+  val smoothingPercent: Int = DEFAULT_SMOOTHING_PERCENT,
   val speedPercent: Int = DEFAULT_SPEED_PERCENT,
 ) {
   companion object {
     const val DEFAULT_SPEED_PERCENT = 100
+    const val DEFAULT_SMOOTHING_PERCENT = 40
     const val MIN_SPEED_PERCENT = 25
     const val MAX_SPEED_PERCENT = 300
   }
@@ -186,6 +197,10 @@ fun SettingsScreen(
       val scrollValue = uiState.scroll
       var scrollInvertY by remember(scrollValue) { mutableStateOf(scrollValue.invertY) }
       var scrollInvertX by remember(scrollValue) { mutableStateOf(scrollValue.invertX) }
+      var scrollMode by remember(scrollValue) { mutableIntStateOf(scrollValue.mode) }
+      var scrollSmoothing by remember(scrollValue) {
+        mutableIntStateOf(scrollValue.smoothingPercent)
+      }
       var scrollSpeed by remember(scrollValue) { mutableIntStateOf(scrollValue.speedPercent) }
       var isDirty by remember(screenValue, scrollValue) { mutableStateOf(false) }
 
@@ -209,6 +224,8 @@ fun SettingsScreen(
           ScrollSettings(
             invertY = scrollInvertY,
             invertX = scrollInvertX,
+            mode = scrollMode,
+            smoothingPercent = scrollSmoothing,
             speedPercent = scrollSpeed,
           ),
         )
@@ -577,6 +594,72 @@ fun SettingsScreen(
             )
 
             Text(
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurface,
+              text = stringResource(R.string.settings_screen_scroll_mode_label),
+            )
+            Column(modifier = Modifier.fillMaxWidth()) {
+              SCROLL_MODE_OPTIONS.forEach { (modeId, labelRes, descriptionRes) ->
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  modifier =
+                    Modifier.fillMaxWidth()
+                      .clip(MaterialTheme.shapes.small)
+                      .clickable {
+                        scrollMode = modeId
+                        isDirty = true
+                      }
+                      .padding(vertical = 4.dp),
+                ) {
+                  RadioButton(
+                    selected = scrollMode == modeId,
+                    onClick = {
+                      scrollMode = modeId
+                      isDirty = true
+                    },
+                  )
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      style = MaterialTheme.typography.bodyMedium,
+                      color = MaterialTheme.colorScheme.onSurface,
+                      text = stringResource(labelRes),
+                    )
+                    Text(
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      text = stringResource(descriptionRes),
+                    )
+                  }
+                }
+              }
+            }
+
+            Column(modifier = Modifier.fillMaxWidth()) {
+              Text(
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                text =
+                  stringResource(
+                    R.string.settings_screen_scroll_smoothing_label,
+                    scrollSmoothing,
+                  ),
+              )
+              Slider(
+                value = scrollSmoothing.toFloat(),
+                valueRange = 0f..100f,
+                onValueChange = {
+                  scrollSmoothing = (it / 5f).roundToInt() * 5
+                  isDirty = true
+                },
+              )
+              Text(
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                text = stringResource(R.string.settings_screen_scroll_smoothing_description),
+              )
+            }
+
+            Text(
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
               text = stringResource(R.string.settings_screen_scroll_invert_description),
@@ -624,6 +707,36 @@ fun SettingsScreen(
     }
   }
 }
+
+/** Scroll modes: id (see `ScrollMode`), label & description */
+private val SCROLL_MODE_OPTIONS =
+  listOf(
+    Triple(
+      0,
+      R.string.settings_screen_scroll_mode_finger,
+      R.string.settings_screen_scroll_mode_finger_description,
+    ),
+    Triple(
+      1,
+      R.string.settings_screen_scroll_mode_swipes,
+      R.string.settings_screen_scroll_mode_swipes_description,
+    ),
+    Triple(
+      2,
+      R.string.settings_screen_scroll_mode_flick,
+      R.string.settings_screen_scroll_mode_flick_description,
+    ),
+    Triple(
+      3,
+      R.string.settings_screen_scroll_mode_steps,
+      R.string.settings_screen_scroll_mode_steps_description,
+    ),
+    Triple(
+      4,
+      R.string.settings_screen_scroll_mode_page,
+      R.string.settings_screen_scroll_mode_page_description,
+    ),
+  )
 
 @Composable
 private fun SettingsSwitchRow(

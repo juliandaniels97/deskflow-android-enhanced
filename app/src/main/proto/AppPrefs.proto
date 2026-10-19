@@ -53,6 +53,12 @@ message AppPrefs {
 
     // Invert the horizontal scroll direction
     bool scroll_invert_x = 3;
+
+    // How scrolling is performed, see `ScrollMode` (0 = virtual finger)
+    int32 scroll_mode = 4;
+
+    // Smoothing in percent + 1 (0 = default)
+    int32 scroll_smoothing = 5;
   }
 
   ScreenConfig screen = 1;

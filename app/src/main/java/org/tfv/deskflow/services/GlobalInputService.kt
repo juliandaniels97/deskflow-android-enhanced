@@ -75,6 +75,7 @@ import org.tfv.deskflow.ext.canDrawOverlays
 import org.tfv.deskflow.ext.getScreenSize
 import org.tfv.deskflow.ext.sendServiceConnectionEvent
 import org.tfv.deskflow.services.input.ScrollController
+import org.tfv.deskflow.services.input.ScrollMode
 import org.tfv.deskflow.services.input.VirtualFinger
 
 @OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
@@ -194,6 +195,7 @@ class GlobalInputService : AccessibilityService() {
   /** Translates mouse wheel events into smooth touch scrolling. */
   private val scrollController by lazy {
     ScrollController(
+      this,
       finger,
       globalInputHandler,
       pointerProvider = {
@@ -201,7 +203,80 @@ class GlobalInputService : AccessibilityService() {
       },
       boundsProvider = ::screenBounds,
       density = resources.displayMetrics.density,
+      nodeScroller = ::scrollNodeAt,
     )
+  }
+
+  /**
+   * Scroll the scrollable view at [x], [y] using accessibility actions (no
+   * gestures). [dirX]/[dirY] are finger directions, e.g. a finger moving down
+   * (`dirY > 0`) shows the content above, so the view scrolls up.
+   */
+  private fun scrollNodeAt(x: Float, y: Float, dirX: Int, dirY: Int): Boolean {
+    val px = x.toInt()
+    val py = y.toInt()
+    val roots = buildList {
+      rootInActiveWindow?.let { add(it) }
+      try {
+        windows.forEach { window -> window.root?.let { add(it) } }
+      } catch (err: Exception) {
+        log.warn { "Unable to list windows: ${err.message}" }
+      }
+    }
+
+    for (root in roots) {
+      var node = findDeepestNodeAt(root, px, py)
+      while (node != null) {
+        if (node.isScrollable && performScrollAction(node, dirX, dirY)) {
+          return true
+        }
+        node = node.parent
+      }
+    }
+    return false
+  }
+
+  private fun performScrollAction(
+    node: AccessibilityNodeInfo,
+    dirX: Int,
+    dirY: Int,
+  ): Boolean {
+    val (directional, fallback) =
+      when {
+        dirY > 0 ->
+          AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP to
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD
+        dirY < 0 ->
+          AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN to
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD
+        dirX > 0 ->
+          AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT to
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD
+        else ->
+          AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT to
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD
+      }
+    return node.performAction(directional.id) || node.performAction(fallback.id)
+  }
+
+  /** The deepest (smallest) node containing [x], [y], or `null`. */
+  private fun findDeepestNodeAt(
+    node: AccessibilityNodeInfo,
+    x: Int,
+    y: Int,
+    depth: Int = 0,
+  ): AccessibilityNodeInfo? {
+    val bounds = Rect()
+    node.getBoundsInScreen(bounds)
+    if (!bounds.contains(x, y) || depth > MAX_NODE_DEPTH) return null
+
+    for (i in node.childCount - 1 downTo 0) {
+      val child = node.getChild(i) ?: continue
+      findDeepestNodeAt(child, x, y, depth + 1)?.let {
+        return it
+      }
+    }
+    return node
   }
 
   /** State of the left mouse button (press, drag & long press). */
@@ -371,6 +446,11 @@ class GlobalInputService : AccessibilityService() {
         val input = appPrefs.input
         scrollController.invertY = input.scrollInvert
         scrollController.invertX = input.scrollInvertX
+        scrollController.mode = ScrollMode.fromId(input.scrollMode)
+        // Stored as percent + 1, so 0 means "not set"
+        scrollController.smoothing =
+          if (input.scrollSmoothing <= 0) ScrollController.DEFAULT_SMOOTHING
+          else (input.scrollSmoothing - 1) / 100f
         scrollController.speed =
           if (input.scrollSpeedPercent <= 0) 1f
           else input.scrollSpeedPercent / 100f
@@ -855,6 +935,9 @@ class GlobalInputService : AccessibilityService() {
 
     /** Holding the left button this long puts the finger down (long press) */
     private const val LONG_PRESS_DELAY_MS = 300L
+
+    /** Max. depth when searching the view hierarchy */
+    private const val MAX_NODE_DEPTH = 64
 
     /** Duration of the long press gesture used for right clicks */
     private const val LONG_PRESS_GESTURE_MS = 700L
