@@ -31,6 +31,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import org.tfv.deskflow.client.ClientEventBus
 import org.tfv.deskflow.client.events.ClientEvent
+import org.tfv.deskflow.client.events.ConnectionEvent
 import org.tfv.deskflow.client.events.KeyboardEvent
 import org.tfv.deskflow.client.events.MessagesEvent
 import org.tfv.deskflow.client.events.MouseEvent
