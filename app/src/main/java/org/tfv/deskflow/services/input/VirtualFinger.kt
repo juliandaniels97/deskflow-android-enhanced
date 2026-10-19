@@ -228,9 +228,11 @@ class VirtualFinger(
   companion object {
     private val log = KLoggingManager.logger(VirtualFinger::class.java.simpleName)
 
-    private const val MS_PER_PX = 0.4f
-    private const val MIN_SEGMENT_MS = 16L
-    private const val MAX_SEGMENT_MS = 120L
+    // Segments cover roughly the time until the next one is dispatched, so
+    // the finger moves continuously instead of stop & go.
+    private const val MS_PER_PX = 0.3f
+    private const val MIN_SEGMENT_MS = 32L
+    private const val MAX_SEGMENT_MS = 90L
     private const val HOLD_SEGMENT_MS = 40L
     private const val LIFT_SEGMENT_MS = 120L
   }

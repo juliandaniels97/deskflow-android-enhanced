@@ -225,6 +225,9 @@ class ConnectionService : Service() {
                     autoDiscoverDisabled = !screenState.server.autoDiscover
                   }
                 }
+                // The user configured the connection, automatic discovery
+                // may run from now on
+                setupCompleted = true
               }
               .build()
           }
@@ -380,8 +383,12 @@ class ConnectionService : Service() {
       val hasServer =
         currentServer.address.isNotBlank() &&
           currentServer.address != SERVER_DEFAULT_ADDRESS
+      // Never connect automatically on the very first app start, the user
+      // sets up the connection manually first
+      val setupCompleted = hasServer || appPrefsStore.data.first().setupCompleted
       val shouldDiscover =
-        state.isEnabled &&
+        setupCompleted &&
+          state.isEnabled &&
           !state.isConnected &&
           currentServer.autoDiscover &&
           (!hasServer || now - disconnectedSince > AUTO_DISCOVERY_RECONNECT_GRACE_MS)

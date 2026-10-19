@@ -45,11 +45,14 @@ message AppPrefs {
 
 
   message InputConfig {
-    // Invert the mouse wheel / trackpad scroll direction
+    // Invert the vertical mouse wheel / trackpad scroll direction
     bool scroll_invert = 1;
 
     // Scroll speed in percent, `0` means default (100%)
     int32 scroll_speed_percent = 2;
+
+    // Invert the horizontal scroll direction
+    bool scroll_invert_x = 3;
   }
 
   ScreenConfig screen = 1;
@@ -59,5 +62,9 @@ message AppPrefs {
   LoggingConfig logging = 3;
 
   InputConfig input = 4;
+
+  // Set once the connection was configured by the user, automatic server
+  // discovery only runs afterwards (not on the very first app start).
+  bool setup_completed = 5;
 
 }

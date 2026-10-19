@@ -102,7 +102,8 @@ internal fun SettingsScreenRoute(appState: IAppState) {
   val scrollSettings =
     appPrefs?.input?.let { input ->
       ScrollSettings(
-        invert = input.scrollInvert,
+        invertY = input.scrollInvert,
+        invertX = input.scrollInvertX,
         speedPercent =
           if (input.scrollSpeedPercent <= 0) ScrollSettings.DEFAULT_SPEED_PERCENT
           else input.scrollSpeedPercent,
@@ -120,7 +121,8 @@ internal fun SettingsScreenRoute(appState: IAppState) {
         ctx.appPrefsStore.updateData { prefs ->
           prefs.copy {
             input = inputConfig {
-              scrollInvert = newScrollSettings.invert
+              scrollInvert = newScrollSettings.invertY
+              scrollInvertX = newScrollSettings.invertX
               scrollSpeedPercent = newScrollSettings.speedPercent
             }
           }
@@ -136,7 +138,8 @@ internal fun SettingsScreenRoute(appState: IAppState) {
 
 /** Mouse wheel / trackpad scrolling preferences */
 data class ScrollSettings(
-  val invert: Boolean = false,
+  val invertY: Boolean = false,
+  val invertX: Boolean = false,
   val speedPercent: Int = DEFAULT_SPEED_PERCENT,
 ) {
   companion object {
@@ -181,7 +184,8 @@ fun SettingsScreen(
       var useTls by remember(screenValue) { mutableStateOf(screenValue.server.useTls) }
       var autoDiscover by remember(screenValue) { mutableStateOf(screenValue.server.autoDiscover) }
       val scrollValue = uiState.scroll
-      var scrollInvert by remember(scrollValue) { mutableStateOf(scrollValue.invert) }
+      var scrollInvertY by remember(scrollValue) { mutableStateOf(scrollValue.invertY) }
+      var scrollInvertX by remember(scrollValue) { mutableStateOf(scrollValue.invertX) }
       var scrollSpeed by remember(scrollValue) { mutableIntStateOf(scrollValue.speedPercent) }
       var isDirty by remember(screenValue, scrollValue) { mutableStateOf(false) }
 
@@ -202,7 +206,11 @@ fun SettingsScreen(
                 this.autoDiscover = autoDiscover
               }
           },
-          ScrollSettings(invert = scrollInvert, speedPercent = scrollSpeed),
+          ScrollSettings(
+            invertY = scrollInvertY,
+            invertX = scrollInvertX,
+            speedPercent = scrollSpeed,
+          ),
         )
       }
 
@@ -568,32 +576,29 @@ fun SettingsScreen(
               text = stringResource(R.string.settings_screen_scrolling_title),
             )
 
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              Column(modifier = Modifier.weight(1f)) {
-                Text(
-                  style = MaterialTheme.typography.bodyMedium,
-                  color = MaterialTheme.colorScheme.onSurface,
-                  text = stringResource(R.string.settings_screen_scroll_invert_label),
-                )
-                Text(
-                  style = MaterialTheme.typography.bodySmall,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
-                  text =
-                    stringResource(R.string.settings_screen_scroll_invert_description),
-                )
-              }
-              Switch(
-                checked = scrollInvert,
-                onCheckedChange = {
-                  scrollInvert = it
-                  isDirty = true
-                },
-              )
-            }
+            Text(
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              text = stringResource(R.string.settings_screen_scroll_invert_description),
+            )
+
+            SettingsSwitchRow(
+              label = stringResource(R.string.settings_screen_scroll_invert_y_label),
+              checked = scrollInvertY,
+              onCheckedChange = {
+                scrollInvertY = it
+                isDirty = true
+              },
+            )
+
+            SettingsSwitchRow(
+              label = stringResource(R.string.settings_screen_scroll_invert_x_label),
+              checked = scrollInvertX,
+              onCheckedChange = {
+                scrollInvertX = it
+                isDirty = true
+              },
+            )
 
             Column(modifier = Modifier.fillMaxWidth()) {
               Text(
@@ -617,6 +622,27 @@ fun SettingsScreen(
         }
       }
     }
+  }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+  label: String,
+  checked: Boolean,
+  onCheckedChange: (Boolean) -> Unit,
+) {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+    modifier = Modifier.fillMaxWidth(),
+  ) {
+    Text(
+      style = MaterialTheme.typography.bodyMedium,
+      color = MaterialTheme.colorScheme.onSurface,
+      text = label,
+      modifier = Modifier.weight(1f),
+    )
+    Switch(checked = checked, onCheckedChange = onCheckedChange)
   }
 }
 

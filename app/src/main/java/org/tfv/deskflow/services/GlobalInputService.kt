@@ -369,7 +369,8 @@ class GlobalInputService : AccessibilityService() {
     serviceScope.launch {
       appPrefsStore.data.collect { appPrefs ->
         val input = appPrefs.input
-        scrollController.invert = input.scrollInvert
+        scrollController.invertY = input.scrollInvert
+        scrollController.invertX = input.scrollInvertX
         scrollController.speed =
           if (input.scrollSpeedPercent <= 0) 1f
           else input.scrollSpeedPercent / 100f

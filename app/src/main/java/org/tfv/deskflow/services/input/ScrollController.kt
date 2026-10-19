@@ -47,8 +47,11 @@ class ScrollController(
   private val density: Float,
 ) {
 
-  /** Invert the scroll direction ("natural" scrolling). */
-  @Volatile var invert: Boolean = false
+  /** Invert the vertical scroll direction. */
+  @Volatile var invertY: Boolean = false
+
+  /** Invert the horizontal scroll direction. */
+  @Volatile var invertX: Boolean = false
 
   /** Scroll speed multiplier, `1.0` = default. */
   @Volatile var speed: Float = 1f
@@ -58,6 +61,19 @@ class ScrollController(
 
   /** `true` while the finger is used by this controller. */
   private var ownsFinger = false
+
+  private enum class Axis {
+    None,
+    X,
+    Y,
+  }
+
+  /**
+   * Axis the current finger is locked to. Trackpads always send a little
+   * movement on the other axis too, which would make horizontally swipeable
+   * content (tabs, carousels, home screen pages) jump & snap back.
+   */
+  private var lockedAxis = Axis.None
 
   /** Time of the last wheel event */
   private var lastWheelAt = 0L
@@ -78,13 +94,30 @@ class ScrollController(
   fun onWheel(xDelta: Int, yDelta: Int) {
     val bounds = boundsProvider()
     val notchPx = NOTCH_DP * density * speed
-    val direction = if (invert) -1f else 1f
+    val directionX = if (invertX) -1f else 1f
+    val directionY = if (invertY) -1f else 1f
     lastWheelAt = System.currentTimeMillis()
 
     // Wheel up (positive y) shows content above -> finger moves down.
     // Wheel right (positive x) shows content on the right -> finger moves left.
-    pending.x += -xDelta / WHEEL_DELTA_PER_NOTCH * notchPx * direction
-    pending.y += yDelta / WHEEL_DELTA_PER_NOTCH * notchPx * direction
+    var dx = -xDelta / WHEEL_DELTA_PER_NOTCH * notchPx * directionX
+    var dy = yDelta / WHEEL_DELTA_PER_NOTCH * notchPx * directionY
+
+    if (!finger.isDown || !ownsFinger) {
+      // A new finger will be placed, choose its axis again
+      lockedAxis = Axis.None
+    }
+    if (lockedAxis == Axis.None && (dx != 0f || dy != 0f)) {
+      lockedAxis = if (kotlin.math.abs(dy) >= kotlin.math.abs(dx)) Axis.Y else Axis.X
+    }
+    when (lockedAxis) {
+      Axis.Y -> dx = 0f
+      Axis.X -> dy = 0f
+      Axis.None -> {}
+    }
+
+    pending.x += dx
+    pending.y += dy
 
     // Never build up a backlog, the content must follow the wheel directly
     val maxX = bounds.x * MAX_PENDING_SCREEN_FRACTION
@@ -101,6 +134,7 @@ class ScrollController(
   fun reset() {
     handler.removeCallbacks(idleLift)
     pending.set(0f, 0f)
+    lockedAxis = Axis.None
     if (ownsFinger) {
       ownsFinger = false
       finger.cancel()
