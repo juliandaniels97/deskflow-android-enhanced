@@ -200,6 +200,7 @@ class GlobalInputService : AccessibilityService() {
         PointF(mousePointerLayout.x.toFloat(), mousePointerLayout.y.toFloat())
       },
       boundsProvider = ::screenBounds,
+      density = resources.displayMetrics.density,
     )
   }
 

@@ -43,6 +43,8 @@ class ScrollController(
   private val handler: Handler,
   private val pointerProvider: () -> PointF,
   private val boundsProvider: () -> PointF,
+  /** Display density, to scroll the same physical distance on all devices */
+  private val density: Float,
 ) {
 
   /** Invert the scroll direction ("natural" scrolling). */
@@ -57,7 +59,15 @@ class ScrollController(
   /** `true` while the finger is used by this controller. */
   private var ownsFinger = false
 
+  /** Time of the last wheel event */
+  private var lastWheelAt = 0L
+
+  /**
+   * No more wheel events: drop any remaining distance (so nothing scrolls
+   * after you stopped scrolling) & lift the finger without a fling.
+   */
   private val idleLift = Runnable {
+    pending.set(0f, 0f)
     if (ownsFinger && finger.isDown) finger.up()
   }
 
@@ -67,13 +77,19 @@ class ScrollController(
    */
   fun onWheel(xDelta: Int, yDelta: Int) {
     val bounds = boundsProvider()
-    val notchPx = bounds.y * NOTCH_SCREEN_FRACTION * speed
+    val notchPx = NOTCH_DP * density * speed
     val direction = if (invert) -1f else 1f
+    lastWheelAt = System.currentTimeMillis()
 
     // Wheel up (positive y) shows content above -> finger moves down.
     // Wheel right (positive x) shows content on the right -> finger moves left.
     pending.x += -xDelta / WHEEL_DELTA_PER_NOTCH * notchPx * direction
     pending.y += yDelta / WHEEL_DELTA_PER_NOTCH * notchPx * direction
+
+    // Never build up a backlog, the content must follow the wheel directly
+    val maxX = bounds.x * MAX_PENDING_SCREEN_FRACTION
+    val maxY = bounds.y * MAX_PENDING_SCREEN_FRACTION
+    pending.set(pending.x.coerceIn(-maxX, maxX), pending.y.coerceIn(-maxY, maxY))
 
     handler.removeCallbacks(idleLift)
     handler.postDelayed(idleLift, IDLE_LIFT_MS)
@@ -104,8 +120,14 @@ class ScrollController(
       ownsFinger = true
       finger.onLifted = {
         ownsFinger = false
-        // Continue with the remaining distance, if any
-        if (pending.x != 0f || pending.y != 0f) handler.post { apply() }
+        // Continue with the remaining distance, only while still scrolling
+        val stillScrolling =
+          System.currentTimeMillis() - lastWheelAt < IDLE_LIFT_MS
+        if (!stillScrolling) {
+          pending.set(0f, 0f)
+        } else if (pending.x != 0f || pending.y != 0f) {
+          handler.post { apply() }
+        }
       }
       finger.down(pointer.x, pointer.y)
     } else if (!ownsFinger) {
@@ -147,8 +169,17 @@ class ScrollController(
 
   companion object {
     private const val WHEEL_DELTA_PER_NOTCH = 120f
-    private const val NOTCH_SCREEN_FRACTION = 0.06f
-    private const val EDGE_FRACTION = 0.03f
-    private const val IDLE_LIFT_MS = 140L
+
+    /**
+     * Distance per 120 wheel units. macOS sends every trackpad event as
+     * (accelerated) lines, so this must be small.
+     */
+    private const val NOTCH_DP = 16f
+
+    /** Max. distance waiting to be applied, relative to the screen size */
+    private const val MAX_PENDING_SCREEN_FRACTION = 0.15f
+
+    private const val EDGE_FRACTION = 0.05f
+    private const val IDLE_LIFT_MS = 180L
   }
 }
