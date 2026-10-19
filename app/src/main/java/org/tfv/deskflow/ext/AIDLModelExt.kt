@@ -67,6 +67,7 @@ fun ConnectionStateDefaults(context: Context): ConnectionState {
                 address = SERVER_DEFAULT_ADDRESS
                 port = SERVER_DEFAULT_PORT
                 useTls = false
+                autoDiscover = true
             }
         }
     }
@@ -102,11 +103,13 @@ fun ScreenState.toServerTarget(): ServerTarget {
 fun ServerState.copy(
     address: String = this.address,
     port: Int = this.port,
-    useTls: Boolean = this.useTls
+    useTls: Boolean = this.useTls,
+    autoDiscover: Boolean = this.autoDiscover
 ): ServerState {
     return ServerState().apply {
         this.address = address
         this.port = port
         this.useTls = useTls
+        this.autoDiscover = autoDiscover
     }
 }

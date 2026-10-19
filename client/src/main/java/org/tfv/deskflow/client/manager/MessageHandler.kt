@@ -31,6 +31,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import org.tfv.deskflow.client.ClientEventBus
 import org.tfv.deskflow.client.events.ClientEvent
+import org.tfv.deskflow.client.events.ConnectionEvent
 import org.tfv.deskflow.client.events.KeyboardEvent
 import org.tfv.deskflow.client.events.MessagesEvent
 import org.tfv.deskflow.client.events.MouseEvent
@@ -255,17 +256,24 @@ class MessageHandler(
       }
 
       is IncompatibleMessage -> {
-        log.error { "Needs to be implemented: ${message.type.name}" }
+        reject("The server uses an incompatible protocol version, update Deskflow on the server.")
       }
 
       is BusyMessage -> {
-          log.warn { "BUSY MESSAGE RECEIVED, RESET CONNECTION??" }
-      //log.warn { "BUSY MESSAGE RECEIVED, RESETTING CONNECTION" }
-        //socket.dispose()
+        reject(
+          "The server refused the screen name \"$screenName\": a computer with this name is " +
+            "already connected. Make sure the server computer itself (e.g. your Mac) has a " +
+            "different name and no other device uses \"$screenName\", or change the screen " +
+            "name in the app.",
+        )
       }
 
       is UnknownMessage -> {
-        log.error { "Needs to be implemented: ${message.type.name}" }
+        reject(
+          "The server does not know the screen name \"$screenName\". In the Deskflow app on " +
+            "the server open \"Configure Server\", drag a new computer into the layout & " +
+            "name it exactly \"$screenName\".",
+        )
       }
 
       is BadMessage -> {
@@ -276,6 +284,12 @@ class MessageHandler(
         log.warn { "Unknown message type: ${message.type.name}" }
       }
     }
+  }
+
+  private fun reject(hint: String) {
+    log.error { "Connection rejected by server: $hint" }
+    ClientEventBus.emit(ConnectionEvent.Rejected)
+    socket.close()
   }
 
   fun getInfoMessage(): InfoMessage {

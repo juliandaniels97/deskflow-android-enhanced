@@ -42,8 +42,20 @@ A **near** fully functional [Deskflow (deskflow.org)](https://deskflow.org) clie
 - Simple gesture support 
   - Pull down on the status bar
   - Pull up for all apps, etc
-- **Content Scrolling is not functional with gestures or click & drag, BUT arrow keys in many apps will work.**
-- **IMPORTANT: TLS is Supported, but individual client certificates are not.**  
+- Content scrolling (like on the desktop clients)
+  - Mouse wheel & trackpad scrolling, vertical **and** horizontal, smooth & without unintended flings
+  - Invertible scroll direction (e.g. for macOS natural scrolling) & adjustable scroll speed
+- Mouse buttons
+  - Click & drag (e.g. drag lists, sliders, move icons)
+  - Hold the left button for a long press (& long-press-drag)
+  - Right click = long press (context menus), "back" mouse button = Android back
+- Automatic server discovery
+  - Finds the Deskflow server (e.g. your Mac) on the local network & connects automatically,
+    no hostname or IP address needed (mDNS/Bonjour + subnet scan, plain & TLS)
+  - "Search network" in the settings lists all found servers to pick from
+- TLS incl. client certificates ("Require client certificates" on the server)
+  - On the first connection, the Deskflow app on the server asks to trust this device's
+    fingerprint (shown in the Android settings when TLS is enabled), accept it once
 
 ## Installation
 

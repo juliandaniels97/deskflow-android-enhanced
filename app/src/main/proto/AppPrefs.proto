@@ -16,6 +16,8 @@ message AppPrefs {
       int32 port = 2;
 
       bool use_tls = 3;
+
+      bool auto_discover_disabled = 4;
     }
 
     string name = 1;
@@ -40,10 +42,26 @@ message AppPrefs {
 
 
 
+  message InputConfig {
+    bool scroll_invert = 1;
+
+    int32 scroll_speed_percent = 2;
+
+    bool scroll_invert_x = 3;
+
+    int32 scroll_mode = 4;
+
+    optional int32 scroll_smoothing = 5;
+  }
+
   ScreenConfig screen = 1;
 
   ActionsConfig actions = 2;
 
   LoggingConfig logging = 3;
+
+  InputConfig input = 4;
+
+  bool setup_completed = 5;
 
 }

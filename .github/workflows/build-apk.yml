@@ -1,0 +1,54 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - 'v**'
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0 platform-tools'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build release APK (arm64-v8a)
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Collect APK
+        run: |
+          mkdir -p dist
+          VERSION=$(grep '^versionName=' version.properties | cut -d= -f2)
+          cp app/build/outputs/apk/release/*.apk "dist/DeskflowAndroid-v${VERSION}-arm64-v8a.apk"
+
+      - name: Publish APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.ref_name }}
+          name: APK build (${{ github.ref_name }})
+          prerelease: true
+          files: dist/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
