@@ -1,3 +1,9 @@
+Added Features:
+- Mouse wheel/trackpad scrolling via a continued-gesture "virtual finger" (vertical & horizontal, no unintended flings), invert & speed settings
+- Click & drag, long press by holding the left button, right click = long press, back mouse button = Android back
+- Automatic discovery of Deskflow servers (mDNS + subnet scan, plain/TLS hello verification) with auto connect and a "Search network" picker
+
+
 # Deskflow Android
 
 A **near** fully functional [Deskflow (deskflow.org)](https://deskflow.org) client for Android devices.
