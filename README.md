@@ -47,7 +47,9 @@ A **near** fully functional [Deskflow (deskflow.org)](https://deskflow.org) clie
   - Finds the Deskflow server (e.g. your Mac) on the local network & connects automatically,
     no hostname or IP address needed (mDNS/Bonjour + subnet scan, plain & TLS)
   - "Search network" in the settings lists all found servers to pick from
-- **IMPORTANT: TLS is Supported, but individual client certificates are not.**  
+- TLS incl. client certificates ("Require client certificates" on the server)
+  - On the first connection, the Deskflow app on the server asks to trust this device's
+    fingerprint (shown in the Android settings when TLS is enabled), accept it once
 
 ## Installation
 

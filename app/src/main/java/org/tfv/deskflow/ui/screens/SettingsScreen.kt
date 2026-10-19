@@ -28,6 +28,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -51,10 +52,13 @@ import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavOptions
 import androidx.navigation.compose.composable
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import org.tfv.deskflow.R
 import org.tfv.deskflow.client.util.logging.KLoggingManager
+import org.tfv.deskflow.components.ClientCertificate
 import org.tfv.deskflow.components.DiscoveredServer
 import org.tfv.deskflow.components.ServerDiscovery
 import org.tfv.deskflow.data.appPrefsStore
@@ -407,6 +411,35 @@ fun SettingsScreen(
                     isDirty = true
                   },
                 )
+              }
+            }
+
+            if (useTls) {
+              val fingerprint by
+                produceState<String?>(initialValue = null) {
+                  value =
+                    withContext(Dispatchers.IO) {
+                      try {
+                        ClientCertificate.fingerprint()
+                      } catch (err: Exception) {
+                        log.error(err) { "Unable to load client certificate" }
+                        null
+                      }
+                    }
+                }
+              Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  text = stringResource(R.string.settings_screen_tls_fingerprint_label),
+                )
+                SelectionContainer {
+                  Text(
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    text = fingerprint ?: "\u2026",
+                  )
+                }
               }
             }
 

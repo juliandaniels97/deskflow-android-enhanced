@@ -58,6 +58,7 @@ import org.tfv.deskflow.client.ext.toDebugString
 import org.tfv.deskflow.client.manager.ClipboardSendManager
 import org.tfv.deskflow.client.models.ClipboardData
 import org.tfv.deskflow.client.models.SERVER_DEFAULT_ADDRESS
+import org.tfv.deskflow.components.ClientCertificate
 import org.tfv.deskflow.components.ServerDiscovery
 import org.tfv.deskflow.client.util.logging.KLoggingManager
 import org.tfv.deskflow.data.aidl.ConnectionState
@@ -112,7 +113,7 @@ class ConnectionService : Service() {
   private val broadcastExecutor =
     Executors.newSingleThreadExecutor(broadcastThreadFactory)
 
-  private val client = Client()
+  private val client = Client(keyManagersProvider = { ClientCertificate.keyManagers() })
 
   /** The connection state model */
   private lateinit var connectionStateModel: ConnectionStateModel

@@ -40,7 +40,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.cert.X509Certificate
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
+import java.util.concurrent.Executor
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509TrustManager
@@ -100,7 +100,16 @@ class ServerDiscovery(context: Context) {
   suspend fun discover(port: Int = SERVER_DEFAULT_PORT): List<DiscoveredServer> =
     coroutineScope {
       val effectivePort = if (port in 1..65535) port else SERVER_DEFAULT_PORT
-      val mdnsJob = async { browseMdns(MDNS_BROWSE_MS) }
+      val mdnsJob = async {
+        try {
+          browseMdns(MDNS_BROWSE_MS)
+        } catch (err: kotlinx.coroutines.CancellationException) {
+          throw err
+        } catch (err: Exception) {
+          log.warn { "mDNS browsing failed: ${err.message}" }
+          emptyList()
+        }
+      }
 
       val semaphore = Semaphore(PROBE_CONCURRENCY)
       val probedKeys = ConcurrentHashMap.newKeySet<String>()
@@ -178,20 +187,32 @@ class ServerDiscovery(context: Context) {
     }
 
     // TLS enabled servers only talk after a handshake
-    val tlsHello =
+    val isTlsServer =
       try {
         probeTls(address)
-      } catch (ignored: Exception) {
+      } catch (err: Exception) {
+        log.debug { "TLS probe of $host:$port failed: ${err.message}" }
         false
       }
 
     // An open Deskflow port without a hello is still a candidate
-    return DiscoveredServer(host, port, null, verified = tlsHello, useTls = tlsHello)
+    return DiscoveredServer(host, port, null, verified = isTlsServer, useTls = isTlsServer)
   }
 
+  /**
+   * `true` if a TLS handshake succeeds. The client certificate is presented,
+   * so a server that does not trust it yet asks to trust it.
+   */
   private fun probeTls(address: InetSocketAddress): Boolean {
     val sslContext = SSLContext.getInstance("TLS")
-    sslContext.init(null, arrayOf(TrustAllManager), null)
+    val keyManagers =
+      try {
+        ClientCertificate.keyManagers()
+      } catch (err: Exception) {
+        log.warn { "Client certificate unavailable: ${err.message}" }
+        null
+      }
+    sslContext.init(keyManagers, arrayOf(TrustAllManager), null)
 
     val raw = Socket()
     try {
@@ -207,7 +228,14 @@ class ServerDiscovery(context: Context) {
       return sslSocket.use {
         it.soTimeout = TLS_TIMEOUT_MS
         it.startHandshake()
-        readHello(it.inputStream)
+        // The handshake identifies a TLS server on the Deskflow port. The
+        // hello only arrives, if the server already trusts this device.
+        try {
+          readHello(it.inputStream)
+        } catch (err: IOException) {
+          log.debug { "No TLS hello from ${address.hostString}: ${err.message}" }
+        }
+        true
       }
     } finally {
       closeQuietly(raw)
@@ -279,11 +307,20 @@ class ServerDiscovery(context: Context) {
   @SuppressLint("NewApi")
   private suspend fun browseMdns(durationMs: Long): List<MdnsHit> {
     val hits = ConcurrentHashMap<String, MdnsHit>()
-    val executor = Executors.newSingleThreadExecutor()
+    // NsdManager delivers callbacks (e.g. "unregistered") asynchronously, even
+    // after browsing stopped. A direct executor can never reject them, a
+    // shut down executor would throw & crash the app.
+    val executor = Executor { command ->
+      try {
+        command.run()
+      } catch (err: Throwable) {
+        log.warn { "mDNS callback failed: ${err.message}" }
+      }
+    }
     val discoveryListeners = mutableListOf<NsdManager.DiscoveryListener>()
     val infoCallbacks = ConcurrentHashMap<String, NsdManager.ServiceInfoCallback>()
 
-    fun onResolved(info: NsdServiceInfo, isDeskflowType: Boolean) {
+    fun onResolvedUnsafe(info: NsdServiceInfo, isDeskflowType: Boolean) {
       val name = info.serviceName?.let { cleanServiceName(it) } ?: return
       info.hostAddresses
         .filterIsInstance<Inet4Address>()
@@ -297,6 +334,12 @@ class ServerDiscovery(context: Context) {
         }
     }
 
+
+    fun onResolved(info: NsdServiceInfo, isDeskflowType: Boolean) = try {
+      onResolvedUnsafe(info, isDeskflowType)
+    } catch (err: Exception) {
+      log.warn { "Unable to handle mDNS service: ${err.message}" }
+    }
     try {
       for (type in MDNS_SERVICE_TYPES) {
         val isDeskflowType = type in MDNS_DESKFLOW_SERVICE_TYPES
@@ -360,7 +403,6 @@ class ServerDiscovery(context: Context) {
             nsdManager.unregisterServiceInfoCallback(callback)
           } catch (ignored: Exception) {}
         }
-        executor.shutdown()
       }
     }
 

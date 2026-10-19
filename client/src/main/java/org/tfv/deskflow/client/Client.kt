@@ -40,8 +40,12 @@ import org.tfv.deskflow.client.util.AbstractDisposable
 import org.tfv.deskflow.client.util.SingletonThreadExecutor
 import org.tfv.deskflow.client.util.disposeOf
 import org.tfv.deskflow.client.util.logging.KLoggingManager
+import javax.net.ssl.KeyManager
 
-class Client() : AbstractDisposable() {
+class Client(
+  /** Provides the client certificate used for TLS connections (optional) */
+  private val keyManagersProvider: () -> Array<KeyManager>? = { null },
+) : AbstractDisposable() {
 
   private var socket: FullDuplexSocket? = null
 
@@ -162,7 +166,17 @@ class Client() : AbstractDisposable() {
     }
 
     try {
-      val socket = FullDuplexSocket(target.address, target.port, target.useTls)
+      val keyManagers =
+        if (target.useTls) {
+          try {
+            keyManagersProvider()
+          } catch (err: Exception) {
+            log.error(err) { "Unable to load the client certificate" }
+            null
+          }
+        } else null
+      val socket =
+        FullDuplexSocket(target.address, target.port, target.useTls, keyManagers)
       messageHandler = MessageHandler(socket, target)
 
       this.socket = socket
