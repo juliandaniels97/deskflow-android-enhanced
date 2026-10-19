@@ -101,6 +101,9 @@ class Client(
             isConnected -> {
               log.debug { "Socket is connected already" }
             }
+            System.currentTimeMillis() < retryNotBefore -> {
+              log.debug { "Connection was rejected recently, waiting" }
+            }
             else -> {
               log.debug { "Attempting to connect..." }
               connect()
@@ -112,6 +115,9 @@ class Client(
       },
     )
   }
+
+  /** After the server refused the connection, don't retry before this time */
+  @Volatile private var retryNotBefore = 0L
 
   private val messageParser = MessageParser()
   private var messageHandler: MessageHandler? = null
@@ -141,6 +147,8 @@ class Client(
       }
 
       this.target = target
+      // New settings (e.g. another screen name), try right away
+      retryNotBefore = 0L
 
       connect()
     }
@@ -227,6 +235,11 @@ class Client(
         ackReceived = false
         isScreenActive = false
       }
+      is ConnectionEvent.Rejected -> {
+        ackReceived = false
+        isScreenActive = false
+        retryNotBefore = System.currentTimeMillis() + REJECTED_RETRY_DELAY_MS
+      }
     }
   }
 
@@ -282,5 +295,7 @@ class Client(
 
   companion object {
     private val log = KLoggingManager.logger(Client::class.java.simpleName)
+
+    private const val REJECTED_RETRY_DELAY_MS = 10_000L
   }
 }

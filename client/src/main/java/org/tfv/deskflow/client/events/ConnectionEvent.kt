@@ -28,4 +28,7 @@ sealed class ConnectionEvent : ClientEvent() {
     data object Connected : ConnectionEvent()
     data object Disconnected : ConnectionEvent()
 
+    /** The server refused this client (e.g. name in use or unknown) */
+    data class Rejected(val reason: String) : ConnectionEvent()
+
 }
