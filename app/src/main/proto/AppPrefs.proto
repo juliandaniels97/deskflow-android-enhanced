@@ -16,6 +16,10 @@ message AppPrefs {
       int32 port = 2;
 
       bool use_tls = 3;
+
+      // When `false` (default), the app automatically searches the local
+      // network for a Deskflow server & connects to it.
+      bool auto_discover_disabled = 4;
     }
 
     string name = 1;
@@ -40,10 +44,20 @@ message AppPrefs {
 
 
 
+  message InputConfig {
+    // Invert the mouse wheel / trackpad scroll direction
+    bool scroll_invert = 1;
+
+    // Scroll speed in percent, `0` means default (100%)
+    int32 scroll_speed_percent = 2;
+  }
+
   ScreenConfig screen = 1;
 
   ActionsConfig actions = 2;
 
   LoggingConfig logging = 3;
+
+  InputConfig input = 4;
 
 }

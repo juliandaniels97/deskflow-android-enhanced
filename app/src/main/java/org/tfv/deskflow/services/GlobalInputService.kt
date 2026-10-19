@@ -39,6 +39,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.PointF
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
@@ -59,8 +60,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import arrow.core.raise.catch
 import kotlin.concurrent.atomics.AtomicBoolean
-import kotlin.math.abs
-import kotlin.math.max
+import kotlin.math.hypot
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.tfv.deskflow.R
@@ -70,9 +70,12 @@ import org.tfv.deskflow.client.events.ScreenEvent
 import org.tfv.deskflow.client.models.ClipboardData
 import org.tfv.deskflow.client.util.logging.KLoggingManager
 import org.tfv.deskflow.components.GlobalKeyboardManager
+import org.tfv.deskflow.data.appPrefsStore
 import org.tfv.deskflow.ext.canDrawOverlays
 import org.tfv.deskflow.ext.getScreenSize
 import org.tfv.deskflow.ext.sendServiceConnectionEvent
+import org.tfv.deskflow.services.input.ScrollController
+import org.tfv.deskflow.services.input.VirtualFinger
 
 @OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
 @SuppressLint("ServiceCast", "NewApi")
@@ -180,6 +183,49 @@ class GlobalInputService : AccessibilityService() {
 
   /** WindowManager instance for managing the mouse pointer view. */
   private lateinit var windowManager: WindowManager
+
+  /**
+   * Virtual finger used for click & drag, long press and content scrolling.
+   */
+  private val finger by lazy {
+    VirtualFinger(this, globalInputHandler, ::screenBounds)
+  }
+
+  /** Translates mouse wheel events into smooth touch scrolling. */
+  private val scrollController by lazy {
+    ScrollController(
+      finger,
+      globalInputHandler,
+      pointerProvider = {
+        PointF(mousePointerLayout.x.toFloat(), mousePointerLayout.y.toFloat())
+      },
+      boundsProvider = ::screenBounds,
+    )
+  }
+
+  /** State of the left mouse button (press, drag & long press). */
+  private var leftButtonPressed = false
+  private var leftButtonDragging = false
+  private val leftButtonPressPoint = PointF()
+
+  /**
+   * When the left button is held without moving, the virtual finger is put
+   * down, so the system recognizes a long press (& long-press-drag).
+   */
+  private val longPressRunnable = Runnable {
+    if (leftButtonPressed && !leftButtonDragging) {
+      startDrag()
+      finger.hold()
+    }
+  }
+
+  private fun screenBounds(): PointF {
+    val screenSize = getScreenSize()
+    return PointF(
+      screenSize.px.width.toFloat(),
+      screenSize.px.height.toFloat(),
+    )
+  }
 
   private val serviceScope =
     CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -318,6 +364,16 @@ class GlobalInputService : AccessibilityService() {
     createNotificationChannel()
 
     keyboardManager = GlobalKeyboardManager(this)
+
+    serviceScope.launch {
+      appPrefsStore.data.collect { appPrefs ->
+        val input = appPrefs.input
+        scrollController.invert = input.scrollInvert
+        scrollController.speed =
+          if (input.scrollSpeedPercent <= 0) 1f
+          else input.scrollSpeedPercent / 100f
+      }
+    }
     serviceScope.launch {
       keyboardManager.actionFlow.collect { action ->
         log.debug { "Triggered Action: ${action.label}(${action.actionId})" }
@@ -496,14 +552,15 @@ class GlobalInputService : AccessibilityService() {
   }
 
   /**
-   * Move the cursor to the specified coordinates. This is used to move the
-   * mouse pointer to a specific location on the screen.
-   * > Example: Used for mouse movement in the global input service.
+   * Handle mouse events from the server: pointer movement, clicks, click &
+   * drag, long press (holding the left button or a right click) and content
+   * scrolling via the mouse wheel / trackpad.
    */
   private fun onMouseEvent(event: MouseEvent) {
     when (event.type) {
       MouseEvent.Type.Move -> {
         moveMousePointer(event.x, event.y)
+        onPointerMovedWhilePressed()
       }
 
       MouseEvent.Type.MoveRelative -> {
@@ -511,23 +568,93 @@ class GlobalInputService : AccessibilityService() {
           mousePointerLayout.x + event.x,
           mousePointerLayout.y + event.y,
         )
+        onPointerMovedWhilePressed()
       }
 
       MouseEvent.Type.Down -> {
         log.debug { "Down [$event]" }
+        if (event.id == BUTTON_LEFT) {
+          scrollController.reset()
+          leftButtonPressed = true
+          leftButtonDragging = false
+          leftButtonPressPoint.set(
+            mousePointerLayout.x.toFloat(),
+            mousePointerLayout.y.toFloat(),
+          )
+          globalInputHandler.removeCallbacks(longPressRunnable)
+          globalInputHandler.postDelayed(longPressRunnable, LONG_PRESS_DELAY_MS)
+        }
       }
 
       MouseEvent.Type.Up -> {
         log.debug { "Up [$event]" }
-        clickGesture()
+        when (event.id) {
+          BUTTON_LEFT -> {
+            globalInputHandler.removeCallbacks(longPressRunnable)
+            val wasDragging = leftButtonDragging
+            leftButtonPressed = false
+            leftButtonDragging = false
+            if (wasDragging) {
+              finger.up()
+            } else {
+              clickGesture()
+            }
+          }
+
+          BUTTON_RIGHT -> longPressGesture()
+
+          BUTTON_BACK -> performGlobalAction(GLOBAL_ACTION_BACK)
+
+          else -> {}
+        }
       }
 
       MouseEvent.Type.Wheel -> {
-        if (abs(event.y) < 240) return
         log.debug { "Wheel [${event.x}, ${event.y}]" }
-        swipe(up = event.y > 0)
+        if (leftButtonPressed) return
+        scrollController.onWheel(event.x, event.y)
       }
     }
+  }
+
+  /** Starts or continues a drag, when the left button is held. */
+  private fun onPointerMovedWhilePressed() {
+    if (!leftButtonPressed) return
+
+    val x = mousePointerLayout.x.toFloat()
+    val y = mousePointerLayout.y.toFloat()
+    if (!leftButtonDragging) {
+      val distance =
+        hypot(x - leftButtonPressPoint.x, y - leftButtonPressPoint.y)
+      if (distance < DRAG_SLOP_PX) return
+      globalInputHandler.removeCallbacks(longPressRunnable)
+      startDrag()
+    }
+    finger.moveTo(x, y)
+  }
+
+  /** Put the virtual finger down at the point the left button was pressed. */
+  private fun startDrag() {
+    leftButtonDragging = true
+    scrollController.reset()
+    finger.onLifted = null
+    finger.down(leftButtonPressPoint.x, leftButtonPressPoint.y)
+  }
+
+  /** Perform a long press at the current mouse pointer position. */
+  private fun longPressGesture(
+    x: Float = mousePointerLayout.x.toFloat(),
+    y: Float = mousePointerLayout.y.toFloat(),
+  ) {
+    log.debug { "Long press gesture at [$x, $y]" }
+    scrollController.reset()
+
+    val path = Path().apply { moveTo(x, y) }
+    val gesture =
+      GestureDescription.Builder()
+        .addStroke(StrokeDescription(path, 0, LONG_PRESS_GESTURE_MS))
+        .build()
+    dispatchGesture(gesture, gestureResultCallback, globalInputHandler)
   }
 
   /** Set up the pointer view and add it to the window manager. */
@@ -662,61 +789,6 @@ class GlobalInputService : AccessibilityService() {
   }
 
   /**
-   * Perform a swipe gesture. If [up] is true, it swipes up, otherwise it swipes
-   * down. The swipe starts from the middle of the screen and goes to the top or
-   * bottom.
-   * > Example: Used for scrolling in lists or returning to the home screen.
-   */
-  private fun swipe(up: Boolean = false) {
-    if (globalInputPending) return
-
-    globalInputPending = true
-
-    val screenSize = getScreenSize()
-
-    val (width, height) =
-      Pair(screenSize.px.width.toFloat(), screenSize.px.height.toFloat())
-    val middleX = width / 2f
-
-    val (startY, endY) =
-      when {
-        up && isHomeScreenActive -> {
-          Pair(
-            mousePointerLayout.y.toFloat(),
-            max(mousePointerLayout.y.toFloat() - (height * 0.42f), 0f),
-          )
-        }
-
-        up -> {
-          Pair(height - 5f, height * 0.42f)
-        }
-
-        else -> {
-          Pair(
-            mousePointerLayout.y.toFloat(),
-            mousePointerLayout.y.toFloat() + (height * 0.5f),
-          )
-        }
-      }
-
-    val path =
-      Path().apply {
-        moveTo(middleX, startY)
-        lineTo(middleX, endY)
-      }
-
-    val stroke = StrokeDescription(path, 0, 500)
-
-    val gesture = GestureDescription.Builder().addStroke(stroke).build()
-
-    log.debug {
-      "Swipe up=$up,startY=$startY,endY=$endY,screenSize=$screenSize,path=$path"
-    }
-
-    dispatchGesture(gesture, gestureResultCallback, globalInputHandler)
-  }
-
-  /**
    * Fetch the list of known home packages. This is used to determine if the
    * current screen is the home screen.
    */
@@ -770,6 +842,20 @@ class GlobalInputService : AccessibilityService() {
   companion object {
     private const val CHANNEL_ID = "deskflow_service_channel"
     private const val NOTIF_IME_NOT_SETUP_ID = 1
+
+    /** Deskflow mouse button ids */
+    private const val BUTTON_LEFT = 1u
+    private const val BUTTON_RIGHT = 3u
+    private const val BUTTON_BACK = 4u
+
+    /** Distance the pointer must move with the left button held to drag */
+    private const val DRAG_SLOP_PX = 12f
+
+    /** Holding the left button this long puts the finger down (long press) */
+    private const val LONG_PRESS_DELAY_MS = 300L
+
+    /** Duration of the long press gesture used for right clicks */
+    private const val LONG_PRESS_GESTURE_MS = 700L
 
     private val TAG = GlobalInputService::class.java.simpleName
     private val log =

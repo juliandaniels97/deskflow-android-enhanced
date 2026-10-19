@@ -89,4 +89,12 @@
     <string name="permission_dialog_ime_enabled_message">In order to use Deskflow, you must enable the Deskflow keyboard in settings.</string>
 
 
+    <string name="settings_screen_auto_discover_label">Find server automatically</string>
+    <string name="settings_screen_auto_discover_description">Searches the local network for a Deskflow server (e.g. your Mac) and connects to it, no hostname or IP address needed.</string>
+    <string name="settings_screen_discover_button">Search network</string>
+    <string name="settings_screen_discover_none_found">No Deskflow server found. Make sure the server is running and both devices are on the same network.</string>
+    <string name="settings_screen_scrolling_title">Scrolling</string>
+    <string name="settings_screen_scroll_invert_label">Invert scroll direction</string>
+    <string name="settings_screen_scroll_invert_description">Use this if scrolling moves the content in the wrong direction (e.g. natural scrolling on macOS).</string>
+    <string name="settings_screen_scroll_speed_label">Scroll speed: %1$d%%</string>
 </resources>

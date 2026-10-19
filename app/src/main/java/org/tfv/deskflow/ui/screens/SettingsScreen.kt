@@ -25,6 +25,7 @@
 package org.tfv.deskflow.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -33,6 +34,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -48,10 +50,16 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavOptions
 import androidx.navigation.compose.composable
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import org.tfv.deskflow.R
 import org.tfv.deskflow.client.util.logging.KLoggingManager
+import org.tfv.deskflow.components.DiscoveredServer
+import org.tfv.deskflow.components.ServerDiscovery
+import org.tfv.deskflow.data.appPrefsStore
+import org.tfv.deskflow.data.models.AppPrefsKt.inputConfig
+import org.tfv.deskflow.data.models.copy
 import org.tfv.deskflow.data.aidl.ScreenState
 import org.tfv.deskflow.data.aidl.ServerState
 import org.tfv.deskflow.ui.annotations.PreviewAll
@@ -84,28 +92,62 @@ internal fun SettingsScreenRoute(appState: IAppState) {
   val snackbarHost = LocalSnackbarHostState.current
   val scope = rememberCoroutineScope()
   val ctx = LocalContext.current
+  val appPrefs by
+    ctx.appPrefsStore.data.collectAsStateWithLifecycle(initialValue = null)
+  val serverDiscovery = remember(ctx) { ServerDiscovery(ctx) }
+  val scrollSettings =
+    appPrefs?.input?.let { input ->
+      ScrollSettings(
+        invert = input.scrollInvert,
+        speedPercent =
+          if (input.scrollSpeedPercent <= 0) ScrollSettings.DEFAULT_SPEED_PERCENT
+          else input.scrollSpeedPercent,
+      )
+    }
   SettingsScreen(
     uiState =
-      if (screenState == null) SettingsUiState.Loading
-      else SettingsUiState.Success(isConnected, screenState),
-    onChange = { newScreenState ->
+      if (screenState == null || scrollSettings == null) SettingsUiState.Loading
+      else SettingsUiState.Success(isConnected, screenState, scrollSettings),
+    onChange = { newScreenState, newScrollSettings ->
       if (appState !is AppState) return@SettingsScreen
 
       appState.serviceClient.updateScreenState(newScreenState)
       scope.launch {
+        ctx.appPrefsStore.updateData { prefs ->
+          prefs.copy {
+            input = inputConfig {
+              scrollInvert = newScrollSettings.invert
+              scrollSpeedPercent = newScrollSettings.speedPercent
+            }
+          }
+        }
         snackbarHost.showSnackbar(ctx.getString(R.string.toast_settings_saved))
       }
 
     },
+    onDiscover = { serverDiscovery.discover() },
     onCancel = { appState.navigateToHome() },
   )
+}
+
+/** Mouse wheel / trackpad scrolling preferences */
+data class ScrollSettings(
+  val invert: Boolean = false,
+  val speedPercent: Int = DEFAULT_SPEED_PERCENT,
+) {
+  companion object {
+    const val DEFAULT_SPEED_PERCENT = 100
+    const val MIN_SPEED_PERCENT = 25
+    const val MAX_SPEED_PERCENT = 300
+  }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
   uiState: SettingsUiState,
-  onChange: (ScreenState) -> Unit,
+  onChange: (ScreenState, ScrollSettings) -> Unit,
+  onDiscover: suspend () -> List<DiscoveredServer>,
   onCancel: () -> Unit,
 ) {
 
@@ -133,7 +175,16 @@ fun SettingsScreen(
       var address by remember(screenValue) { mutableStateOf(screenValue.server.address) }
       var port by remember(screenValue) { mutableIntStateOf(screenValue.server.port) }
       var useTls by remember(screenValue) { mutableStateOf(screenValue.server.useTls) }
-      var isDirty by remember(screenValue) { mutableStateOf(false) }
+      var autoDiscover by remember(screenValue) { mutableStateOf(screenValue.server.autoDiscover) }
+      val scrollValue = uiState.scroll
+      var scrollInvert by remember(scrollValue) { mutableStateOf(scrollValue.invert) }
+      var scrollSpeed by remember(scrollValue) { mutableIntStateOf(scrollValue.speedPercent) }
+      var isDirty by remember(screenValue, scrollValue) { mutableStateOf(false) }
+
+      val discoveryScope = rememberCoroutineScope()
+      var isSearching by remember { mutableStateOf(false) }
+      var hasSearched by remember { mutableStateOf(false) }
+      var discoveredServers by remember { mutableStateOf(emptyList<DiscoveredServer>()) }
 
       val saveChanges ={
         onChange(
@@ -144,8 +195,10 @@ fun SettingsScreen(
                 this.address = address
                 this.port = port
                 this.useTls = useTls
+                this.autoDiscover = autoDiscover
               }
-          }
+          },
+          ScrollSettings(invert = scrollInvert, speedPercent = scrollSpeed),
         )
       }
 
@@ -356,6 +409,177 @@ fun SettingsScreen(
                 )
               }
             }
+
+            /** Automatic server discovery */
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = MaterialTheme.colorScheme.onSurface,
+                  text = stringResource(R.string.settings_screen_auto_discover_label),
+                )
+                Text(
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  text =
+                    stringResource(R.string.settings_screen_auto_discover_description),
+                )
+              }
+              Switch(
+                checked = autoDiscover,
+                onCheckedChange = {
+                  autoDiscover = it
+                  isDirty = true
+                },
+              )
+            }
+
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(12.dp),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              OutlinedButton(
+                enabled = !isSearching,
+                shape = MaterialTheme.shapes.small,
+                onClick = {
+                  isSearching = true
+                  discoveryScope.launch {
+                    discoveredServers =
+                      try {
+                        onDiscover()
+                      } catch (err: Exception) {
+                        log.error(err) { "Server discovery failed" }
+                        emptyList()
+                      } finally {
+                        isSearching = false
+                        hasSearched = true
+                      }
+                  }
+                },
+              ) {
+                Text(stringResource(R.string.settings_screen_discover_button))
+              }
+              if (isSearching) {
+                CircularProgressIndicator(
+                  modifier = Modifier.size(20.dp),
+                  strokeWidth = 2.dp,
+                )
+              }
+            }
+
+            if (hasSearched && !isSearching && discoveredServers.isEmpty()) {
+              Text(
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                text = stringResource(R.string.settings_screen_discover_none_found),
+              )
+            }
+
+            discoveredServers.forEach { server ->
+              val isSelected = server.address == address && server.port == port
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier =
+                  Modifier.fillMaxWidth()
+                    .clip(MaterialTheme.shapes.small)
+                    .background(
+                      if (isSelected) MaterialTheme.colorScheme.secondaryContainer
+                      else Color.Transparent
+                    )
+                    .clickable {
+                      address = server.address
+                      port = server.port
+                      if (server.verified) useTls = server.useTls
+                      isDirty = true
+                    }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    text = server.displayName,
+                  )
+                  Text(
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text =
+                      buildString {
+                        append("${server.address}:${server.port}")
+                        if (server.useTls) append(" · TLS")
+                        if (!server.verified) append(" · ?")
+                      },
+                  )
+                }
+                if (isSelected) {
+                  Text(
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    text = "\u2713",
+                  )
+                }
+              }
+            }
+
+            HorizontalDivider()
+
+            /** Scrolling */
+            Text(
+              style = MaterialTheme.typography.titleSmall,
+              color = MaterialTheme.colorScheme.onSurface,
+              text = stringResource(R.string.settings_screen_scrolling_title),
+            )
+
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = MaterialTheme.colorScheme.onSurface,
+                  text = stringResource(R.string.settings_screen_scroll_invert_label),
+                )
+                Text(
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  text =
+                    stringResource(R.string.settings_screen_scroll_invert_description),
+                )
+              }
+              Switch(
+                checked = scrollInvert,
+                onCheckedChange = {
+                  scrollInvert = it
+                  isDirty = true
+                },
+              )
+            }
+
+            Column(modifier = Modifier.fillMaxWidth()) {
+              Text(
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                text =
+                  stringResource(R.string.settings_screen_scroll_speed_label, scrollSpeed),
+              )
+              Slider(
+                value = scrollSpeed.toFloat(),
+                valueRange =
+                  ScrollSettings.MIN_SPEED_PERCENT.toFloat()..ScrollSettings.MAX_SPEED_PERCENT
+                      .toFloat(),
+                onValueChange = {
+                  scrollSpeed = ((it / 5f).roundToInt() * 5)
+                  isDirty = true
+                },
+              )
+            }
           }
         }
       }
@@ -369,7 +593,8 @@ fun SettingsScreenPreviewLoading() {
   PreviewDeskflowThemedRoot {
     SettingsScreen(
       uiState = SettingsUiState.Loading,
-      onChange = {},
+      onChange = { _, _ -> },
+      onDiscover = { emptyList() },
       onCancel = {},
     )
   }
@@ -392,17 +617,23 @@ fun SettingsScreenPreviewSuccess() {
               address = "localhost"
               port = 24800
               useTls = false
+              autoDiscover = true
             }
         }
       )
     }
     SettingsScreen(
-      uiState = SettingsUiState.Success(true, screenStateValue),
-      onChange = { screenState ->
+      uiState = SettingsUiState.Success(true, screenStateValue, ScrollSettings()),
+      onChange = { screenState, _ ->
         screenStateValue = screenState
         scope.launch {
           snackbarHost.showSnackbar(ctx.getString(R.string.toast_settings_saved))
         }
+      },
+      onDiscover = {
+        listOf(
+          DiscoveredServer("192.168.1.20", 24800, "Julians-MacBook-Pro", verified = true, useTls = true)
+        )
       },
       onCancel = {},
     )
@@ -412,6 +643,9 @@ fun SettingsScreenPreviewSuccess() {
 sealed class SettingsUiState {
   data object Loading : SettingsUiState()
 
-  data class Success(val isConnected: Boolean, val screen: ScreenState) :
-    SettingsUiState()
+  data class Success(
+    val isConnected: Boolean,
+    val screen: ScreenState,
+    val scroll: ScrollSettings,
+  ) : SettingsUiState()
 }
