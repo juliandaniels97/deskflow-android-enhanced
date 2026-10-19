@@ -53,7 +53,6 @@ class FullDuplexSocket(
   private val host: String,
   private val port: Int,
   private val useTls: Boolean,
-  /** Key managers providing the client certificate for TLS (optional) */
   private val keyManagers: Array<KeyManager>? = null,
 ) :
   AbstractDisposable(),
@@ -206,7 +205,6 @@ class FullDuplexSocket(
             throw SSLException("Connection closed during handshake")
           }
           if (res.status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
-            // Need more data from the server
             val read = sc.read(netInBuffer)
             if (read < 0) throw SSLException("Channel closed during handshake")
             if (read == 0) Thread.sleep(5)
@@ -232,11 +230,6 @@ class FullDuplexSocket(
     }
   }
 
-  /**
-   * Decrypt everything available in [netInBuffer] (write mode) into
-   * [readBuffer]. Incomplete TLS records stay in [netInBuffer] until more
-   * data arrives.
-   */
   @Throws(SSLException::class)
   private fun unwrapIncoming(sc: SocketChannel, readBuffer: DynamicByteBuffer) {
     val netInBuffer = netInBuffer ?: throw SSLException("netInBuffer is null")
@@ -244,8 +237,6 @@ class FullDuplexSocket(
     var appInBuffer = appInBuffer ?: throw SSLException("appInBuffer is null")
 
     var produced = false
-
-    // Data decrypted during the handshake
     if (appInBuffer.position() > 0) {
       appInBuffer.flip()
       readBuffer.append(appInBuffer, appInBuffer.remaining())
@@ -265,7 +256,7 @@ class FullDuplexSocket(
         }
 
         when (res.status) {
-          SSLEngineResult.Status.BUFFER_UNDERFLOW -> break // need more data
+          SSLEngineResult.Status.BUFFER_UNDERFLOW -> break
           SSLEngineResult.Status.BUFFER_OVERFLOW -> {
             val bigger =
               ByteBuffer.allocate(
@@ -298,10 +289,6 @@ class FullDuplexSocket(
     }
   }
 
-  /**
-   * Handle post-handshake messages (e.g. TLS 1.3 session tickets / key
-   * updates) without touching the inbound buffer.
-   */
   @Throws(SSLException::class)
   private fun runHandshakeTasks(sc: SocketChannel) {
     val sslEngine = sslEngine ?: throw SSLException("sslEngine is null")
@@ -396,8 +383,6 @@ class FullDuplexSocket(
                 sc.register(sel, SelectionKey.OP_READ or SelectionKey.OP_WRITE)
                 emit(SocketEvent.ConnectEvent(this))
 
-                // Application data may have arrived together with the last
-                // handshake messages
                 if (
                   useTls &&
                     ((netInBuffer?.position() ?: 0) > 0 ||
@@ -442,8 +427,6 @@ class FullDuplexSocket(
                     netOutBuffer ?: throw SSLException("netOutBuffer is null")
                   val sslEngine =
                     sslEngine ?: throw SSLException("sslEngine is null")
-                  // Wrap the complete message (it may span multiple TLS
-                  // records), so message order is preserved
                   while (msg.hasRemaining()) {
                     netOutBuffer.clear()
                     val res = sslEngine.wrap(msg, netOutBuffer)

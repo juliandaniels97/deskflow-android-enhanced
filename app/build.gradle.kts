@@ -68,29 +68,15 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     vectorDrawables.useSupportLibrary = true
 
-    // Target 64-bit ARM devices only
     ndk { abiFilters += listOf("arm64-v8a") }
   }
 
   signingConfigs {
-    // Shared, non-secret debug key, so every build (local & CI) has the same
-    // signature and can be installed as an update.
     getByName("debug") {
       storeFile = file("deskflow-shared-debug.keystore")
       storePassword = "android"
       keyAlias = "androiddebugkey"
       keyPassword = "android"
-    }
-
-    // Optional release key, provided via environment (e.g. CI secrets)
-    val keystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
-    if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
-      create("release") {
-        storeFile = file(keystorePath)
-        storePassword = System.getenv("SIGNING_KEY_PASSWORD")
-        keyAlias = System.getenv("SIGNING_KEY_ALIAS")
-        keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
-      }
     }
   }
   buildFeatures {
@@ -107,10 +93,7 @@ android {
       buildConfigField("boolean", "DEBUG", "true")
     }
     release {
-      // Sign with the release key if available, otherwise with the debug key
-      // so the APK can be installed directly.
-      signingConfig =
-        signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+      signingConfig = signingConfigs.getByName("debug")
       isMinifyEnabled = false
       proguardFiles(
         getDefaultProguardFile("proguard-android-optimize.txt"),

@@ -256,15 +256,11 @@ class MessageHandler(
       }
 
       is IncompatibleMessage -> {
-        reject(
-          "incompatible",
-          "The server uses an incompatible protocol version, update Deskflow on the server.",
-        )
+        reject("The server uses an incompatible protocol version, update Deskflow on the server.")
       }
 
       is BusyMessage -> {
         reject(
-          "busy",
           "The server refused the screen name \"$screenName\": a computer with this name is " +
             "already connected. Make sure the server computer itself (e.g. your Mac) has a " +
             "different name and no other device uses \"$screenName\", or change the screen " +
@@ -274,7 +270,6 @@ class MessageHandler(
 
       is UnknownMessage -> {
         reject(
-          "unknown",
           "The server does not know the screen name \"$screenName\". In the Deskflow app on " +
             "the server open \"Configure Server\", drag a new computer into the layout & " +
             "name it exactly \"$screenName\".",
@@ -291,13 +286,10 @@ class MessageHandler(
     }
   }
 
-  /** The server refused this client, close & let the client retry later. */
-  private fun reject(reason: String, hint: String) {
-    log.error { "Connection rejected by server ($reason): $hint" }
-    ClientEventBus.emit(ConnectionEvent.Rejected(reason))
-    catch({ socket.close() }) { err: Throwable ->
-      log.warn { "Unable to close socket after rejection: ${err.message}" }
-    }
+  private fun reject(hint: String) {
+    log.error { "Connection rejected by server: $hint" }
+    ClientEventBus.emit(ConnectionEvent.Rejected)
+    socket.close()
   }
 
   fun getInfoMessage(): InfoMessage {

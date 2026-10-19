@@ -81,12 +81,8 @@ class ConnectionService : Service() {
   companion object {
     private val log = KLoggingManager.forwardingLogger<ConnectionService>()
 
-    /** Wait a bit after start, so a configured server can connect first */
     private const val AUTO_DISCOVERY_INITIAL_DELAY_MS = 3_000L
-
-    /** Search again after being disconnected from a known server this long */
     private const val AUTO_DISCOVERY_RECONNECT_GRACE_MS = 15_000L
-
     private const val AUTO_DISCOVERY_INTERVAL_MS = 5_000L
     private const val AUTO_DISCOVERY_IDLE_INTERVAL_MS = 20_000L
   }
@@ -225,8 +221,6 @@ class ConnectionService : Service() {
                     autoDiscoverDisabled = !screenState.server.autoDiscover
                   }
                 }
-                // The user configured the connection, automatic discovery
-                // may run from now on
                 setupCompleted = true
               }
               .build()
@@ -363,39 +357,29 @@ class ConnectionService : Service() {
     autoDiscoveryJob = serviceScope.launch { autoDiscoveryRunnable() }
   }
 
-  /**
-   * Automatically find a Deskflow server on the local network & connect to
-   * it, when no server is configured or the configured one is unreachable.
-   *
-   * The found server is stored in the app preferences, so it is used for
-   * reconnecting and shown in the settings.
-   */
   private suspend fun autoDiscoveryRunnable() {
     delay(AUTO_DISCOVERY_INITIAL_DELAY_MS)
 
     var disconnectedSince = System.currentTimeMillis()
     while (currentCoroutineContext().isActive) {
-      val now = System.currentTimeMillis()
       val state = connectionStateModel.state.value
       val currentServer = state.screen.server
-      if (state.isConnected) disconnectedSince = now
+      if (state.isConnected) disconnectedSince = System.currentTimeMillis()
 
       val hasServer =
         currentServer.address.isNotBlank() &&
           currentServer.address != SERVER_DEFAULT_ADDRESS
-      // Never connect automatically on the very first app start, the user
-      // sets up the connection manually first
-      val setupCompleted = hasServer || appPrefsStore.data.first().setupCompleted
       val shouldDiscover =
-        setupCompleted &&
+        (hasServer || appPrefsStore.data.first().setupCompleted) &&
           state.isEnabled &&
           !state.isConnected &&
           currentServer.autoDiscover &&
-          (!hasServer || now - disconnectedSince > AUTO_DISCOVERY_RECONNECT_GRACE_MS)
+          (!hasServer ||
+            System.currentTimeMillis() - disconnectedSince >
+              AUTO_DISCOVERY_RECONNECT_GRACE_MS)
 
       var nextDelay = AUTO_DISCOVERY_INTERVAL_MS
       if (shouldDiscover) {
-        log.info { "Searching for Deskflow servers on the local network" }
         val servers =
           catch({ serverDiscovery.discover(currentServer.port) }) { err: Throwable ->
             log.warn { "Server discovery failed: ${err.message}" }
@@ -407,15 +391,14 @@ class ConnectionService : Service() {
             it.address == currentServer.address && it.port == currentServer.port
           } ?: servers.firstOrNull { it.verified } ?: servers.firstOrNull()
 
-        when {
-          best == null -> {
-            log.info { "No Deskflow server found" }
-            nextDelay = AUTO_DISCOVERY_IDLE_INTERVAL_MS
-          }
-
-          best.address != currentServer.address ||
-            best.port != currentServer.port ||
-            (best.verified && best.useTls != currentServer.useTls) -> {
+        if (best == null) {
+          nextDelay = AUTO_DISCOVERY_IDLE_INTERVAL_MS
+        } else {
+          if (
+            best.address != currentServer.address ||
+              best.port != currentServer.port ||
+              (best.verified && best.useTls != currentServer.useTls)
+          ) {
             log.info {
               "Auto connecting to ${best.displayName} (${best.address}:${best.port}, tls=${best.useTls})"
             }
@@ -432,13 +415,8 @@ class ConnectionService : Service() {
                   }
               }
             }
-            disconnectedSince = System.currentTimeMillis()
           }
-
-          else -> {
-            // Configured server is up, the client keeps retrying it
-            disconnectedSince = System.currentTimeMillis()
-          }
+          disconnectedSince = System.currentTimeMillis()
         }
       }
 

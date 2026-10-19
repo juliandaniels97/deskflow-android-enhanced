@@ -64,6 +64,7 @@ import org.tfv.deskflow.components.ServerDiscovery
 import org.tfv.deskflow.data.appPrefsStore
 import org.tfv.deskflow.data.models.AppPrefsKt.inputConfig
 import org.tfv.deskflow.data.models.copy
+import org.tfv.deskflow.services.input.ScrollMode
 import org.tfv.deskflow.data.aidl.ScreenState
 import org.tfv.deskflow.data.aidl.ServerState
 import org.tfv.deskflow.ui.annotations.PreviewAll
@@ -106,8 +107,8 @@ internal fun SettingsScreenRoute(appState: IAppState) {
         invertX = input.scrollInvertX,
         mode = input.scrollMode,
         smoothingPercent =
-          if (input.scrollSmoothing <= 0) ScrollSettings.DEFAULT_SMOOTHING_PERCENT
-          else input.scrollSmoothing - 1,
+          if (input.hasScrollSmoothing()) input.scrollSmoothing
+          else ScrollSettings.DEFAULT_SMOOTHING_PERCENT,
         speedPercent =
           if (input.scrollSpeedPercent <= 0) ScrollSettings.DEFAULT_SPEED_PERCENT
           else input.scrollSpeedPercent,
@@ -128,8 +129,7 @@ internal fun SettingsScreenRoute(appState: IAppState) {
               scrollInvert = newScrollSettings.invertY
               scrollInvertX = newScrollSettings.invertX
               scrollMode = newScrollSettings.mode
-              // Stored as percent + 1, so 0 means "not set"
-              scrollSmoothing = newScrollSettings.smoothingPercent + 1
+              scrollSmoothing = newScrollSettings.smoothingPercent
               scrollSpeedPercent = newScrollSettings.speedPercent
             }
           }
@@ -143,11 +143,9 @@ internal fun SettingsScreenRoute(appState: IAppState) {
   )
 }
 
-/** Mouse wheel / trackpad scrolling preferences */
 data class ScrollSettings(
   val invertY: Boolean = false,
   val invertX: Boolean = false,
-  /** See `ScrollMode` */
   val mode: Int = 0,
   val smoothingPercent: Int = DEFAULT_SMOOTHING_PERCENT,
   val speedPercent: Int = DEFAULT_SPEED_PERCENT,
@@ -444,12 +442,7 @@ fun SettingsScreen(
                 produceState<String?>(initialValue = null) {
                   value =
                     withContext(Dispatchers.IO) {
-                      try {
-                        ClientCertificate.fingerprint()
-                      } catch (err: Exception) {
-                        log.error(err) { "Unable to load client certificate" }
-                        null
-                      }
+                      runCatching { ClientCertificate.fingerprint() }.getOrNull()
                     }
                 }
               Column(modifier = Modifier.fillMaxWidth()) {
@@ -468,33 +461,15 @@ fun SettingsScreen(
               }
             }
 
-            /** Automatic server discovery */
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              Column(modifier = Modifier.weight(1f)) {
-                Text(
-                  style = MaterialTheme.typography.bodyMedium,
-                  color = MaterialTheme.colorScheme.onSurface,
-                  text = stringResource(R.string.settings_screen_auto_discover_label),
-                )
-                Text(
-                  style = MaterialTheme.typography.bodySmall,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
-                  text =
-                    stringResource(R.string.settings_screen_auto_discover_description),
-                )
-              }
-              Switch(
-                checked = autoDiscover,
-                onCheckedChange = {
-                  autoDiscover = it
-                  isDirty = true
-                },
-              )
-            }
+            SettingsSwitchRow(
+              label = stringResource(R.string.settings_screen_auto_discover_label),
+              description = stringResource(R.string.settings_screen_auto_discover_description),
+              checked = autoDiscover,
+              onCheckedChange = {
+                autoDiscover = it
+                isDirty = true
+              },
+            )
 
             Row(
               verticalAlignment = Alignment.CenterVertically,
@@ -507,16 +482,9 @@ fun SettingsScreen(
                 onClick = {
                   isSearching = true
                   discoveryScope.launch {
-                    discoveredServers =
-                      try {
-                        onDiscover()
-                      } catch (err: Exception) {
-                        log.error(err) { "Server discovery failed" }
-                        emptyList()
-                      } finally {
-                        isSearching = false
-                        hasSearched = true
-                      }
+                    discoveredServers = runCatching { onDiscover() }.getOrDefault(emptyList())
+                    isSearching = false
+                    hasSearched = true
                   }
                 },
               ) {
@@ -586,7 +554,6 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            /** Scrolling */
             Text(
               style = MaterialTheme.typography.titleSmall,
               color = MaterialTheme.colorScheme.onSurface,
@@ -599,7 +566,8 @@ fun SettingsScreen(
               text = stringResource(R.string.settings_screen_scroll_mode_label),
             )
             Column(modifier = Modifier.fillMaxWidth()) {
-              SCROLL_MODE_OPTIONS.forEach { (modeId, labelRes, descriptionRes) ->
+              SCROLL_MODE_OPTIONS.forEach { (mode, labelRes, descriptionRes) ->
+                val modeId = mode.id
                 Row(
                   verticalAlignment = Alignment.CenterVertically,
                   modifier =
@@ -708,31 +676,30 @@ fun SettingsScreen(
   }
 }
 
-/** Scroll modes: id (see `ScrollMode`), label & description */
 private val SCROLL_MODE_OPTIONS =
   listOf(
     Triple(
-      0,
+      ScrollMode.Finger,
       R.string.settings_screen_scroll_mode_finger,
       R.string.settings_screen_scroll_mode_finger_description,
     ),
     Triple(
-      1,
+      ScrollMode.Swipes,
       R.string.settings_screen_scroll_mode_swipes,
       R.string.settings_screen_scroll_mode_swipes_description,
     ),
     Triple(
-      2,
+      ScrollMode.Flick,
       R.string.settings_screen_scroll_mode_flick,
       R.string.settings_screen_scroll_mode_flick_description,
     ),
     Triple(
-      3,
+      ScrollMode.Steps,
       R.string.settings_screen_scroll_mode_steps,
       R.string.settings_screen_scroll_mode_steps_description,
     ),
     Triple(
-      4,
+      ScrollMode.Page,
       R.string.settings_screen_scroll_mode_page,
       R.string.settings_screen_scroll_mode_page_description,
     ),
@@ -743,18 +710,27 @@ private fun SettingsSwitchRow(
   label: String,
   checked: Boolean,
   onCheckedChange: (Boolean) -> Unit,
+  description: String? = null,
 ) {
   Row(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(8.dp),
     modifier = Modifier.fillMaxWidth(),
   ) {
-    Text(
-      style = MaterialTheme.typography.bodyMedium,
-      color = MaterialTheme.colorScheme.onSurface,
-      text = label,
-      modifier = Modifier.weight(1f),
-    )
+    Column(modifier = Modifier.weight(1f)) {
+      Text(
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurface,
+        text = label,
+      )
+      if (description != null) {
+        Text(
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          text = description,
+        )
+      }
+    }
     Switch(checked = checked, onCheckedChange = onCheckedChange)
   }
 }

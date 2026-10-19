@@ -41,22 +41,8 @@ import javax.net.ssl.KeyManager
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.X509ExtendedKeyManager
 import javax.security.auth.x500.X500Principal
-import org.tfv.deskflow.client.util.logging.KLoggingManager
 
-/**
- * The TLS client certificate of this device.
- *
- * Deskflow servers with "Require client certificates" enabled (the default)
- * reject clients without a certificate. On the first connection attempt the
- * Deskflow app on the server asks to trust the fingerprint of this
- * certificate (see [fingerprint]), afterwards connections are accepted.
- *
- * The key is created once in the Android Keystore & never leaves the device,
- * so the fingerprint stays the same.
- */
 object ClientCertificate {
-
-  private val log = KLoggingManager.logger(ClientCertificate::class.java.simpleName)
 
   private const val KEYSTORE = "AndroidKeyStore"
   private const val ALIAS = "deskflow-client-certificate"
@@ -64,26 +50,17 @@ object ClientCertificate {
 
   private data class Material(val key: PrivateKey, val certificate: X509Certificate)
 
-  @Volatile private var material: Material? = null
-
-  @Synchronized
-  private fun load(): Material {
-    material?.let {
-      return it
-    }
-
+  private val material by lazy {
     val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-    if (!keyStore.containsAlias(ALIAS)) {
-      generate()
-    }
+    if (!keyStore.containsAlias(ALIAS)) generate()
 
-    val key = keyStore.getKey(ALIAS, null) as PrivateKey
-    val certificate = keyStore.getCertificate(ALIAS) as X509Certificate
-    return Material(key, certificate).also { material = it }
+    Material(
+      keyStore.getKey(ALIAS, null) as PrivateKey,
+      keyStore.getCertificate(ALIAS) as X509Certificate,
+    )
   }
 
   private fun generate() {
-    log.info { "Generating TLS client certificate" }
     val now = System.currentTimeMillis()
     val day = 24L * 60 * 60 * 1000
     val generator =
@@ -106,18 +83,13 @@ object ClientCertificate {
     generator.generateKeyPair()
   }
 
-  /**
-   * SHA-256 fingerprint of the certificate, formatted like the Deskflow
-   * desktop app shows it (e.g. `AB:CD:...`).
-   */
   fun fingerprint(): String =
-    MessageDigest.getInstance("SHA-256").digest(load().certificate.encoded).joinToString(":") {
+    MessageDigest.getInstance("SHA-256").digest(material.certificate.encoded).joinToString(":") {
       "%02X".format(it)
     }
 
-  /** Key managers presenting the client certificate in TLS handshakes. */
   fun keyManagers(): Array<KeyManager> {
-    val (key, certificate) = load()
+    val (key, certificate) = material
     return arrayOf(SingleKeyManager(key, arrayOf(certificate)))
   }
 

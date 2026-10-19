@@ -43,7 +43,6 @@ import org.tfv.deskflow.client.util.logging.KLoggingManager
 import javax.net.ssl.KeyManager
 
 class Client(
-  /** Provides the client certificate used for TLS connections (optional) */
   private val keyManagersProvider: () -> Array<KeyManager>? = { null },
 ) : AbstractDisposable() {
 
@@ -101,9 +100,7 @@ class Client(
             isConnected -> {
               log.debug { "Socket is connected already" }
             }
-            System.currentTimeMillis() < retryNotBefore -> {
-              log.debug { "Connection was rejected recently, waiting" }
-            }
+            System.currentTimeMillis() < retryNotBefore -> {}
             else -> {
               log.debug { "Attempting to connect..." }
               connect()
@@ -116,7 +113,6 @@ class Client(
     )
   }
 
-  /** After the server refused the connection, don't retry before this time */
   @Volatile private var retryNotBefore = 0L
 
   private val messageParser = MessageParser()
@@ -147,7 +143,6 @@ class Client(
       }
 
       this.target = target
-      // New settings (e.g. another screen name), try right away
       retryNotBefore = 0L
 
       connect()
@@ -174,15 +169,7 @@ class Client(
     }
 
     try {
-      val keyManagers =
-        if (target.useTls) {
-          try {
-            keyManagersProvider()
-          } catch (err: Exception) {
-            log.error(err) { "Unable to load the client certificate" }
-            null
-          }
-        } else null
+      val keyManagers = if (target.useTls) keyManagersProvider() else null
       val socket =
         FullDuplexSocket(target.address, target.port, target.useTls, keyManagers)
       messageHandler = MessageHandler(socket, target)
@@ -235,7 +222,7 @@ class Client(
         ackReceived = false
         isScreenActive = false
       }
-      is ConnectionEvent.Rejected -> {
+      ConnectionEvent.Rejected -> {
         ackReceived = false
         isScreenActive = false
         retryNotBefore = System.currentTimeMillis() + REJECTED_RETRY_DELAY_MS

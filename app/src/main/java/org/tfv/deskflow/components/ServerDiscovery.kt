@@ -45,6 +45,7 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509TrustManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -56,66 +57,34 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.tfv.deskflow.client.models.SERVER_DEFAULT_PORT
 import org.tfv.deskflow.client.util.logging.KLoggingManager
 
-/** A Deskflow server found on the local network. */
 data class DiscoveredServer(
   val address: String,
   val port: Int,
-  /** Host / computer name, if known (e.g. "Julians-MacBook-Pro") */
   val name: String?,
-  /** The server answered with a Deskflow (Synergy/Barrier) hello */
   val verified: Boolean,
-  /** The hello was only received via TLS */
   val useTls: Boolean,
 ) {
   val displayName: String
     get() = name?.takeIf { it.isNotBlank() } ?: address
 }
 
-/**
- * Finds Deskflow servers on the local network, so no hostname or IP address
- * has to be entered manually.
- *
- * Two strategies are combined:
- * 1. mDNS / DNS-SD (Bonjour): Deskflow/Synergy service types and services
- *    that macOS announces by default (to learn computer names & addresses).
- * 2. A scan of the local (Wi-Fi/Ethernet) subnet on the Deskflow port.
- *
- * Every candidate is verified by reading the server hello (plain or TLS).
- */
 class ServerDiscovery(context: Context) {
 
-  private val appContext = context.applicationContext
-
   private val connectivityManager =
-    appContext.getSystemService(ConnectivityManager::class.java)
+    context.getSystemService(ConnectivityManager::class.java)
 
-  private val nsdManager = appContext.getSystemService(NsdManager::class.java)
+  private val nsdManager = context.getSystemService(NsdManager::class.java)
 
-  /**
-   * Search the local network.
-   *
-   * @param port the port to scan, in addition to ports announced via mDNS
-   * @return found servers, best match first
-   */
   suspend fun discover(port: Int = SERVER_DEFAULT_PORT): List<DiscoveredServer> =
     coroutineScope {
       val effectivePort = if (port in 1..65535) port else SERVER_DEFAULT_PORT
-      val mdnsJob = async {
-        try {
-          browseMdns(MDNS_BROWSE_MS)
-        } catch (err: kotlinx.coroutines.CancellationException) {
-          throw err
-        } catch (err: Exception) {
-          log.warn { "mDNS browsing failed: ${err.message}" }
-          emptyList()
-        }
-      }
+      val mdnsJob = async { browseMdns() }
 
       val semaphore = Semaphore(PROBE_CONCURRENCY)
       val probedKeys = ConcurrentHashMap.newKeySet<String>()
       val found = ConcurrentHashMap<String, DiscoveredServer>()
 
-      suspend fun probeAll(candidates: Collection<Pair<String, Int>>) =
+      suspend fun probeAll(candidates: List<Pair<String, Int>>) =
         candidates
           .filter { (host, p) -> probedKeys.add("$host:$p") }
           .map { (host, p) ->
@@ -127,12 +96,9 @@ class ServerDiscovery(context: Context) {
           }
           .awaitAll()
 
-      val subnetHosts = localSubnetHosts()
-      log.info { "Scanning ${subnetHosts.size} hosts on port $effectivePort" }
-      probeAll(subnetHosts.map { it to effectivePort })
+      probeAll(localSubnetHosts().map { it to effectivePort })
 
       val mdnsHits = mdnsJob.await()
-      log.info { "mDNS found ${mdnsHits.size} hosts" }
       probeAll(
         mdnsHits.flatMap { hit ->
           listOfNotNull(
@@ -157,11 +123,12 @@ class ServerDiscovery(context: Context) {
             .thenBy { it.address }
         )
         .also { servers ->
-          log.info { "Discovered servers: ${servers.joinToString { "${it.displayName}(${it.address}:${it.port})" }}" }
+          log.info {
+            "Discovered servers: ${servers.joinToString { "${it.displayName}(${it.address}:${it.port})" }}"
+          }
         }
     }
 
-  /** Check whether a Deskflow server is listening at [host]:[port]. */
   private fun probe(host: String, port: Int): DiscoveredServer? {
     val address = InetSocketAddress(host, port)
     val socket = Socket()
@@ -186,55 +153,29 @@ class ServerDiscovery(context: Context) {
       return DiscoveredServer(host, port, null, verified = true, useTls = false)
     }
 
-    // TLS enabled servers only talk after a handshake
     val isTlsServer =
       try {
         probeTls(address)
-      } catch (err: Exception) {
-        log.debug { "TLS probe of $host:$port failed: ${err.message}" }
+      } catch (ignored: Exception) {
         false
       }
-
-    // An open Deskflow port without a hello is still a candidate
     return DiscoveredServer(host, port, null, verified = isTlsServer, useTls = isTlsServer)
   }
 
-  /**
-   * `true` if a TLS handshake succeeds. The client certificate is presented,
-   * so a server that does not trust it yet asks to trust it.
-   */
   private fun probeTls(address: InetSocketAddress): Boolean {
     val sslContext = SSLContext.getInstance("TLS")
-    val keyManagers =
-      try {
-        ClientCertificate.keyManagers()
-      } catch (err: Exception) {
-        log.warn { "Client certificate unavailable: ${err.message}" }
-        null
-      }
-    sslContext.init(keyManagers, arrayOf(TrustAllManager), null)
+    sslContext.init(ClientCertificate.keyManagers(), arrayOf(TrustAllManager), null)
 
     val raw = Socket()
     try {
       raw.connect(address, CONNECT_TIMEOUT_MS)
-      raw.soTimeout = TLS_TIMEOUT_MS
       val sslSocket =
-        sslContext.socketFactory.createSocket(
-          raw,
-          address.hostString,
-          address.port,
-          true,
-        ) as SSLSocket
+        sslContext.socketFactory.createSocket(raw, address.hostString, address.port, true)
+          as SSLSocket
       return sslSocket.use {
         it.soTimeout = TLS_TIMEOUT_MS
         it.startHandshake()
-        // The handshake identifies a TLS server on the Deskflow port. The
-        // hello only arrives, if the server already trusts this device.
-        try {
-          readHello(it.inputStream)
-        } catch (err: IOException) {
-          log.debug { "No TLS hello from ${address.hostString}: ${err.message}" }
-        }
+        runCatching { readHello(it.inputStream) }
         true
       }
     } finally {
@@ -242,10 +183,6 @@ class ServerDiscovery(context: Context) {
     }
   }
 
-  /**
-   * Read the server hello: `int32 length`, protocol name (e.g. "Synergy" or
-   * "Barrier"), `int16 major`, `int16 minor`.
-   */
   private fun readHello(input: InputStream): Boolean {
     val din = DataInputStream(input)
     val length = din.readInt()
@@ -256,33 +193,23 @@ class ServerDiscovery(context: Context) {
     return name.all { it.toInt().toChar().isLetter() }
   }
 
-  /** All IPv4 host addresses of the local Wi-Fi/Ethernet subnet. */
   private fun localSubnetHosts(): List<String> {
     val network = connectivityManager.activeNetwork ?: return emptyList()
-    val caps = connectivityManager.getNetworkCapabilities(network)
+    val caps = connectivityManager.getNetworkCapabilities(network) ?: return emptyList()
     if (
-      caps == null ||
-        !(caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-          caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+      !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+        !caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
     ) {
-      log.warn { "Not connected to Wi-Fi/Ethernet, skipping subnet scan" }
       return emptyList()
     }
 
-    val linkProperties =
-      connectivityManager.getLinkProperties(network) ?: return emptyList()
     val linkAddress =
-      linkProperties.linkAddresses.firstOrNull {
+      connectivityManager.getLinkProperties(network)?.linkAddresses?.firstOrNull {
         it.address is Inet4Address && !it.address.isLoopbackAddress
       } ?: return emptyList()
 
-    val ownBytes = linkAddress.address.address
-    val own =
-      ownBytes.fold(0L) { acc, b -> (acc shl 8) or (b.toLong() and 0xFF) }
-
-    // Large networks: only scan the /24 around our own address
-    val prefix =
-      linkAddress.prefixLength.let { if (it < MIN_SCAN_PREFIX) 24 else it }
+    val own = linkAddress.address.address.fold(0L) { acc, b -> (acc shl 8) or (b.toLong() and 0xFF) }
+    val prefix = linkAddress.prefixLength.let { if (it < MIN_SCAN_PREFIX) 24 else it }
     if (prefix > 30) return emptyList()
 
     val mask = (0xFFFFFFFFL shl (32 - prefix)) and 0xFFFFFFFFL
@@ -296,32 +223,23 @@ class ServerDiscovery(context: Context) {
       }
   }
 
-  private data class MdnsHit(
-    val address: String,
-    val name: String,
-    /** Port, if the service is a Deskflow/Synergy service */
-    val deskflowPort: Int?,
-  )
+  private data class MdnsHit(val address: String, val name: String, val deskflowPort: Int?)
 
-  /** Browse well known mDNS service types for [durationMs]. */
   @SuppressLint("NewApi")
-  private suspend fun browseMdns(durationMs: Long): List<MdnsHit> {
+  private suspend fun browseMdns(): List<MdnsHit> {
     val hits = ConcurrentHashMap<String, MdnsHit>()
-    // NsdManager delivers callbacks (e.g. "unregistered") asynchronously, even
-    // after browsing stopped. A direct executor can never reject them, a
-    // shut down executor would throw & crash the app.
     val executor = Executor { command ->
       try {
         command.run()
-      } catch (err: Throwable) {
+      } catch (err: Exception) {
         log.warn { "mDNS callback failed: ${err.message}" }
       }
     }
     val discoveryListeners = mutableListOf<NsdManager.DiscoveryListener>()
     val infoCallbacks = ConcurrentHashMap<String, NsdManager.ServiceInfoCallback>()
 
-    fun onResolvedUnsafe(info: NsdServiceInfo, isDeskflowType: Boolean) {
-      val name = info.serviceName?.let { cleanServiceName(it) } ?: return
+    fun onResolved(info: NsdServiceInfo, isDeskflowType: Boolean) {
+      val name = info.serviceName?.substringAfter('@')?.trim() ?: return
       info.hostAddresses
         .filterIsInstance<Inet4Address>()
         .mapNotNull { it.hostAddress }
@@ -334,12 +252,6 @@ class ServerDiscovery(context: Context) {
         }
     }
 
-
-    fun onResolved(info: NsdServiceInfo, isDeskflowType: Boolean) = try {
-      onResolvedUnsafe(info, isDeskflowType)
-    } catch (err: Exception) {
-      log.warn { "Unable to handle mDNS service: ${err.message}" }
-    }
     try {
       for (type in MDNS_SERVICE_TYPES) {
         val isDeskflowType = type in MDNS_DESKFLOW_SERVICE_TYPES
@@ -360,13 +272,10 @@ class ServerDiscovery(context: Context) {
 
                   override fun onServiceInfoCallbackUnregistered() {}
                 }
-              infoCallbacks[key] = callback
               try {
                 nsdManager.registerServiceInfoCallback(serviceInfo, executor, callback)
-              } catch (err: Exception) {
-                log.debug { "Unable to resolve $key: ${err.message}" }
-                infoCallbacks.remove(key)
-              }
+                infoCallbacks[key] = callback
+              } catch (ignored: Exception) {}
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
@@ -375,9 +284,7 @@ class ServerDiscovery(context: Context) {
 
             override fun onDiscoveryStopped(serviceType: String) {}
 
-            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-              log.debug { "mDNS discovery failed for $serviceType ($errorCode)" }
-            }
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {}
 
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
           }
@@ -385,22 +292,20 @@ class ServerDiscovery(context: Context) {
         try {
           nsdManager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener)
           discoveryListeners.add(listener)
-        } catch (err: Exception) {
-          log.debug { "Unable to browse $type: ${err.message}" }
-        }
+        } catch (ignored: Exception) {}
       }
 
-      delay(durationMs)
+      delay(MDNS_BROWSE_MS)
     } finally {
-      withContext(kotlinx.coroutines.NonCancellable) {
-        discoveryListeners.forEach { listener ->
+      withContext(NonCancellable) {
+        discoveryListeners.forEach {
           try {
-            nsdManager.stopServiceDiscovery(listener)
+            nsdManager.stopServiceDiscovery(it)
           } catch (ignored: Exception) {}
         }
-        infoCallbacks.values.forEach { callback ->
+        infoCallbacks.values.forEach {
           try {
-            nsdManager.unregisterServiceInfoCallback(callback)
+            nsdManager.unregisterServiceInfoCallback(it)
           } catch (ignored: Exception) {}
         }
       }
@@ -409,23 +314,16 @@ class ServerDiscovery(context: Context) {
     return hits.values.toList()
   }
 
-  /** Reverse DNS lookup, many routers know the computer names. */
   private suspend fun reverseLookup(address: String): String? =
     withTimeoutOrNull(REVERSE_LOOKUP_TIMEOUT_MS) {
       withContext(Dispatchers.IO) {
         try {
-          InetAddress.getByName(address).canonicalHostName.takeIf {
-            it != address
-          }
+          InetAddress.getByName(address).canonicalHostName.takeIf { it != address }
         } catch (ignored: Exception) {
           null
         }
       }
     }
-
-  private fun cleanServiceName(name: String): String =
-    // e.g. "Julians MacBook Pro" or "AA:BB:CC:DD:EE:FF@Julians MacBook Pro"
-    name.substringAfter('@').trim()
 
   private fun closeQuietly(socket: Socket) {
     try {
@@ -457,24 +355,11 @@ class ServerDiscovery(context: Context) {
     private const val HELLO_MIN_SIZE = HELLO_PROTOCOL_NAME_SIZE + 4
     private const val HELLO_MAX_SIZE = 64
 
-    /** Service types that announce a Deskflow/Synergy server directly */
     private val MDNS_DESKFLOW_SERVICE_TYPES =
       setOf("_deskflow._tcp", "_synergyServerZeroconf._tcp", "_barrier._tcp")
 
-    /**
-     * Service types announced by macOS (and often other desktops) by default.
-     * Used to learn computer names & addresses, the Deskflow port is probed.
-     */
-    private val MDNS_HOST_SERVICE_TYPES =
-      setOf(
-        "_companion-link._tcp",
-        "_rfb._tcp",
-        "_ssh._tcp",
-        "_smb._tcp",
-        "_airplay._tcp",
-      )
-
     private val MDNS_SERVICE_TYPES =
-      MDNS_DESKFLOW_SERVICE_TYPES + MDNS_HOST_SERVICE_TYPES
+      MDNS_DESKFLOW_SERVICE_TYPES +
+        setOf("_companion-link._tcp", "_rfb._tcp", "_ssh._tcp", "_smb._tcp", "_airplay._tcp")
   }
 }
