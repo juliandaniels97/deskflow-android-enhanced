@@ -39,6 +39,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.PointF
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
@@ -59,10 +60,8 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import arrow.core.raise.catch
 import kotlin.concurrent.atomics.AtomicBoolean
-import kotlin.math.abs
-import kotlin.math.max
+import kotlin.math.hypot
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableStateFlow
 import org.tfv.deskflow.R
 import org.tfv.deskflow.client.events.KeyboardEvent
 import org.tfv.deskflow.client.events.MouseEvent
@@ -70,9 +69,13 @@ import org.tfv.deskflow.client.events.ScreenEvent
 import org.tfv.deskflow.client.models.ClipboardData
 import org.tfv.deskflow.client.util.logging.KLoggingManager
 import org.tfv.deskflow.components.GlobalKeyboardManager
+import org.tfv.deskflow.data.appPrefsStore
 import org.tfv.deskflow.ext.canDrawOverlays
 import org.tfv.deskflow.ext.getScreenSize
 import org.tfv.deskflow.ext.sendServiceConnectionEvent
+import org.tfv.deskflow.services.input.ScrollController
+import org.tfv.deskflow.services.input.ScrollMode
+import org.tfv.deskflow.services.input.VirtualFinger
 
 @OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
 @SuppressLint("ServiceCast", "NewApi")
@@ -101,24 +104,6 @@ class GlobalInputService : AccessibilityService() {
     getSystemService(NotificationManager::class.java)
   }
 
-  /**
-   * Flow to observe if the home screen is currently active. This is used to
-   * determine if the current screen is the home screen.
-   * > Example: Used for checking if the user is on the home screen in the
-   * > global input service.
-   */
-  private val isHomeScreenActiveFlow = MutableStateFlow(false)
-
-  /** Check if the home screen is currently active. */
-  private val isHomeScreenActive: Boolean
-    get() = isHomeScreenActiveFlow.value
-
-  /**
-   * Set of known home packages. Populated when the service is connected via
-   * `fetchHomePackages`.
-   */
-  private val knownHomePackages = mutableSetOf<String>()
-
   private val activePackageName: String?
     get() = rootInActiveWindow?.packageName?.toString()
 
@@ -130,33 +115,10 @@ class GlobalInputService : AccessibilityService() {
     get() = keyboardWindowInfo != null
 
   /**
-   * Flag to indicate if a global input action is currently pending. This is
-   * used to prevent multiple gestures from being dispatched at the same time.
-   */
-  @Volatile private var globalInputPending = false
-
-  /**
    * Handler for posting global input actions to the main thread. This is used
    * to ensure that gestures are dispatched on the main thread.
    */
   private val globalInputHandler = Handler(Looper.getMainLooper())
-
-  /**
-   * Callback for gesture results. This is used to handle the completion or
-   * cancellation of gestures.
-   */
-  private val gestureResultCallback =
-    object : GestureResultCallback() {
-      override fun onCompleted(gestureDescription: GestureDescription) {
-        super.onCompleted(gestureDescription)
-        globalInputPending = false
-      }
-
-      override fun onCancelled(gestureDescription: GestureDescription) {
-        super.onCancelled(gestureDescription)
-        globalInputPending = false
-      }
-    }
 
   /**
    * Layout parameters for the mouse pointer view. This is used to position the
@@ -180,6 +142,78 @@ class GlobalInputService : AccessibilityService() {
 
   /** WindowManager instance for managing the mouse pointer view. */
   private lateinit var windowManager: WindowManager
+
+  private val finger by lazy {
+    VirtualFinger(this, globalInputHandler, ::screenBounds)
+  }
+
+  private val scrollController by lazy {
+    ScrollController(
+      this,
+      finger,
+      globalInputHandler,
+      pointerProvider = {
+        PointF(mousePointerLayout.x.toFloat(), mousePointerLayout.y.toFloat())
+      },
+      boundsProvider = ::screenBounds,
+      density = resources.displayMetrics.density,
+      nodeScroller = ::scrollNodeAt,
+    )
+  }
+
+  private var leftButtonPressed = false
+  private var leftButtonDragging = false
+  private val leftButtonPressPoint = PointF()
+
+  private val longPressRunnable = Runnable {
+    if (leftButtonPressed && !leftButtonDragging) {
+      startDrag()
+      finger.hold()
+    }
+  }
+
+  private fun screenBounds(): PointF {
+    val screenSize = getScreenSize()
+    return PointF(
+      screenSize.px.width.toFloat(),
+      screenSize.px.height.toFloat(),
+    )
+  }
+
+  private fun scrollNodeAt(x: Float, y: Float, dirX: Int, dirY: Int) {
+    for (window in windows) {
+      var node =
+        window.root?.let { findSmallestNodeAtPoint(it, x.toInt(), y.toInt()) }
+      while (node != null) {
+        if (node.isScrollable && performScrollAction(node, dirX, dirY)) return
+        node = node.parent
+      }
+    }
+  }
+
+  private fun performScrollAction(
+    node: AccessibilityNodeInfo,
+    dirX: Int,
+    dirY: Int,
+  ): Boolean {
+    val (directional, fallback) =
+      when {
+        dirY > 0 ->
+          AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP to
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD
+        dirY < 0 ->
+          AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN to
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD
+        dirX > 0 ->
+          AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT to
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD
+        else ->
+          AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT to
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD
+      }
+    return node.performAction(directional.id) ||
+      node.performAction(fallback.id)
+  }
 
   private val serviceScope =
     CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -318,6 +352,21 @@ class GlobalInputService : AccessibilityService() {
     createNotificationChannel()
 
     keyboardManager = GlobalKeyboardManager(this)
+
+    serviceScope.launch {
+      appPrefsStore.data.collect { appPrefs ->
+        val input = appPrefs.input
+        scrollController.invertY = input.scrollInvert
+        scrollController.invertX = input.scrollInvertX
+        scrollController.mode = ScrollMode.fromId(input.scrollMode)
+        scrollController.smoothing =
+          if (input.hasScrollSmoothing()) input.scrollSmoothing / 100f
+          else ScrollController.DEFAULT_SMOOTHING
+        scrollController.speed =
+          if (input.scrollSpeedPercent <= 0) 1f
+          else input.scrollSpeedPercent / 100f
+      }
+    }
     serviceScope.launch {
       keyboardManager.actionFlow.collect { action ->
         log.debug { "Triggered Action: ${action.label}(${action.actionId})" }
@@ -474,7 +523,7 @@ class GlobalInputService : AccessibilityService() {
       GestureDescription.Builder()
         .addStroke(StrokeDescription(path, 0, 100))
         .build()
-    dispatchGesture(gesture, gestureResultCallback, globalInputHandler)
+    dispatchGesture(gesture, null, null)
   }
 
   /**
@@ -504,6 +553,7 @@ class GlobalInputService : AccessibilityService() {
     when (event.type) {
       MouseEvent.Type.Move -> {
         moveMousePointer(event.x, event.y)
+        onPointerMovedWhilePressed()
       }
 
       MouseEvent.Type.MoveRelative -> {
@@ -511,23 +561,89 @@ class GlobalInputService : AccessibilityService() {
           mousePointerLayout.x + event.x,
           mousePointerLayout.y + event.y,
         )
+        onPointerMovedWhilePressed()
       }
 
       MouseEvent.Type.Down -> {
         log.debug { "Down [$event]" }
+        if (event.id == BUTTON_LEFT) {
+          scrollController.reset()
+          leftButtonPressed = true
+          leftButtonDragging = false
+          leftButtonPressPoint.set(
+            mousePointerLayout.x.toFloat(),
+            mousePointerLayout.y.toFloat(),
+          )
+          globalInputHandler.removeCallbacks(longPressRunnable)
+          globalInputHandler.postDelayed(longPressRunnable, LONG_PRESS_DELAY_MS)
+        }
       }
 
       MouseEvent.Type.Up -> {
         log.debug { "Up [$event]" }
-        clickGesture()
+        when (event.id) {
+          BUTTON_LEFT -> {
+            globalInputHandler.removeCallbacks(longPressRunnable)
+            val wasDragging = leftButtonDragging
+            leftButtonPressed = false
+            leftButtonDragging = false
+            if (wasDragging) {
+              finger.up()
+            } else {
+              clickGesture()
+            }
+          }
+
+          BUTTON_RIGHT -> longPressGesture()
+
+          BUTTON_BACK -> performGlobalAction(GLOBAL_ACTION_BACK)
+
+          else -> {}
+        }
       }
 
       MouseEvent.Type.Wheel -> {
-        if (abs(event.y) < 240) return
         log.debug { "Wheel [${event.x}, ${event.y}]" }
-        swipe(up = event.y > 0)
+        if (leftButtonPressed) return
+        scrollController.onWheel(event.x, event.y)
       }
     }
+  }
+
+  private fun onPointerMovedWhilePressed() {
+    if (!leftButtonPressed) return
+
+    val x = mousePointerLayout.x.toFloat()
+    val y = mousePointerLayout.y.toFloat()
+    if (!leftButtonDragging) {
+      val distance =
+        hypot(x - leftButtonPressPoint.x, y - leftButtonPressPoint.y)
+      if (distance < DRAG_SLOP_PX) return
+      globalInputHandler.removeCallbacks(longPressRunnable)
+      startDrag()
+    }
+    finger.moveTo(x, y)
+  }
+
+  private fun startDrag() {
+    leftButtonDragging = true
+    scrollController.reset()
+    finger.onLifted = null
+    finger.down(leftButtonPressPoint.x, leftButtonPressPoint.y)
+  }
+
+  private fun longPressGesture() {
+    scrollController.reset()
+
+    val path =
+      Path().apply {
+        moveTo(mousePointerLayout.x.toFloat(), mousePointerLayout.y.toFloat())
+      }
+    val gesture =
+      GestureDescription.Builder()
+        .addStroke(StrokeDescription(path, 0, LONG_PRESS_GESTURE_MS))
+        .build()
+    dispatchGesture(gesture, null, null)
   }
 
   /** Set up the pointer view and add it to the window manager. */
@@ -627,17 +743,11 @@ class GlobalInputService : AccessibilityService() {
     setupMousePointer()
 
     sendServiceConnectionEvent<GlobalInputService>()
-
-    fetchHomePackages()
-    val pkgName = rootInActiveWindow?.packageName
-    isHomeScreenActiveFlow.value =
-      pkgName == null || knownHomePackages.contains(pkgName)
   }
 
   /**
    * All accessibility events are received here; we pay little attention to
-   * them, but we do check for window state changes to determine if the home
-   * screen is active.
+   * them.
    */
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     log.debug { "onAccessibilityEvent: ${event?.eventType}" }
@@ -645,11 +755,6 @@ class GlobalInputService : AccessibilityService() {
     when (event?.eventType) {
       AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
         checkIMESetup()
-      }
-      AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-        val pkgName = rootInActiveWindow?.packageName
-        isHomeScreenActiveFlow.value =
-          pkgName == null || knownHomePackages.contains(pkgName)
       }
       else -> {
         log.debug { "Ignored event: ${event?.eventType}" }
@@ -659,79 +764,6 @@ class GlobalInputService : AccessibilityService() {
 
   override fun onInterrupt() {
     // Required override.
-  }
-
-  /**
-   * Perform a swipe gesture. If [up] is true, it swipes up, otherwise it swipes
-   * down. The swipe starts from the middle of the screen and goes to the top or
-   * bottom.
-   * > Example: Used for scrolling in lists or returning to the home screen.
-   */
-  private fun swipe(up: Boolean = false) {
-    if (globalInputPending) return
-
-    globalInputPending = true
-
-    val screenSize = getScreenSize()
-
-    val (width, height) =
-      Pair(screenSize.px.width.toFloat(), screenSize.px.height.toFloat())
-    val middleX = width / 2f
-
-    val (startY, endY) =
-      when {
-        up && isHomeScreenActive -> {
-          Pair(
-            mousePointerLayout.y.toFloat(),
-            max(mousePointerLayout.y.toFloat() - (height * 0.42f), 0f),
-          )
-        }
-
-        up -> {
-          Pair(height - 5f, height * 0.42f)
-        }
-
-        else -> {
-          Pair(
-            mousePointerLayout.y.toFloat(),
-            mousePointerLayout.y.toFloat() + (height * 0.5f),
-          )
-        }
-      }
-
-    val path =
-      Path().apply {
-        moveTo(middleX, startY)
-        lineTo(middleX, endY)
-      }
-
-    val stroke = StrokeDescription(path, 0, 500)
-
-    val gesture = GestureDescription.Builder().addStroke(stroke).build()
-
-    log.debug {
-      "Swipe up=$up,startY=$startY,endY=$endY,screenSize=$screenSize,path=$path"
-    }
-
-    dispatchGesture(gesture, gestureResultCallback, globalInputHandler)
-  }
-
-  /**
-   * Fetch the list of known home packages. This is used to determine if the
-   * current screen is the home screen.
-   */
-  private fun fetchHomePackages() {
-    val intent =
-      Intent(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_HOME) }
-    val resolveInfoList =
-      packageManager.queryIntentActivities(
-        intent,
-        PackageManager.MATCH_DEFAULT_ONLY,
-      )
-    knownHomePackages.clear()
-    for (info in resolveInfoList) {
-      knownHomePackages.add(info.activityInfo.packageName)
-    }
   }
 
   /**
@@ -770,6 +802,13 @@ class GlobalInputService : AccessibilityService() {
   companion object {
     private const val CHANNEL_ID = "deskflow_service_channel"
     private const val NOTIF_IME_NOT_SETUP_ID = 1
+
+    private const val BUTTON_LEFT = 1u
+    private const val BUTTON_RIGHT = 3u
+    private const val BUTTON_BACK = 4u
+    private const val DRAG_SLOP_PX = 12f
+    private const val LONG_PRESS_DELAY_MS = 300L
+    private const val LONG_PRESS_GESTURE_MS = 700L
 
     private val TAG = GlobalInputService::class.java.simpleName
     private val log =
@@ -813,8 +852,8 @@ class GlobalInputService : AccessibilityService() {
       }
 
       for (i in 0..<sourceNode.childCount) {
-        val nearestSmaller =
-          findSmallestNodeAtPoint(sourceNode.getChild(i), x, y)
+        val child = sourceNode.getChild(i) ?: continue
+        val nearestSmaller = findSmallestNodeAtPoint(child, x, y)
         if (nearestSmaller != null) {
           return nearestSmaller
         }

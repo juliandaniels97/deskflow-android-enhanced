@@ -89,4 +89,27 @@
     <string name="permission_dialog_ime_enabled_message">In order to use Deskflow, you must enable the Deskflow keyboard in settings.</string>
 
 
+    <string name="settings_screen_auto_discover_label">Find server automatically</string>
+    <string name="settings_screen_auto_discover_description">Searches the local network for a Deskflow server (e.g. your Mac) and connects to it, no hostname or IP address needed.</string>
+    <string name="settings_screen_discover_button">Search network</string>
+    <string name="settings_screen_discover_none_found">No Deskflow server found. Make sure the server is running and both devices are on the same network.</string>
+    <string name="settings_screen_scrolling_title">Scrolling</string>
+    <string name="settings_screen_scroll_invert_y_label">Invert vertical scrolling (Y axis)</string>
+    <string name="settings_screen_scroll_invert_x_label">Invert horizontal scrolling (X axis)</string>
+    <string name="settings_screen_scroll_invert_description">Use these if scrolling moves the content in the wrong direction (e.g. natural scrolling on macOS).</string>
+    <string name="settings_screen_scroll_speed_label">Scroll speed: %1$d%%</string>
+    <string name="settings_screen_tls_fingerprint_label">TLS fingerprint of this device. When connecting the first time, the Deskflow app on the server (e.g. your Mac) asks to trust it, compare and accept:</string>
+    <string name="settings_screen_scroll_mode_label">Scroll mode</string>
+    <string name="settings_screen_scroll_mode_finger">1. Virtual finger</string>
+    <string name="settings_screen_scroll_mode_finger_description">A finger stays on the screen and follows the trackpad directly.</string>
+    <string name="settings_screen_scroll_mode_swipes">2. Short swipes</string>
+    <string name="settings_screen_scroll_mode_swipes_description">Scrolling is collected briefly and applied as short swipes, one after another.</string>
+    <string name="settings_screen_scroll_mode_flick">3. Flick (momentum)</string>
+    <string name="settings_screen_scroll_mode_flick_description">One swipe with momentum per scroll movement, like flicking with a finger.</string>
+    <string name="settings_screen_scroll_mode_steps">4. Fixed steps</string>
+    <string name="settings_screen_scroll_mode_steps_description">Even, calm steps without momentum.</string>
+    <string name="settings_screen_scroll_mode_page">5. Page by page (no gestures)</string>
+    <string name="settings_screen_scroll_mode_page_description">Asks the scrollable view under the pointer to scroll. Very stable, but in big jumps.</string>
+    <string name="settings_screen_scroll_smoothing_label">Smoothing: %1$d%%</string>
+    <string name="settings_screen_scroll_smoothing_description">Higher is smoother, but reacts a bit later. Affects modes 1–3 (and the pause between pages in mode 5).</string>
 </resources>

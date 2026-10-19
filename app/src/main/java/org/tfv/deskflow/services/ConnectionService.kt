@@ -38,6 +38,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -54,6 +57,9 @@ import org.tfv.deskflow.client.events.ScreenEvent
 import org.tfv.deskflow.client.ext.toDebugString
 import org.tfv.deskflow.client.manager.ClipboardSendManager
 import org.tfv.deskflow.client.models.ClipboardData
+import org.tfv.deskflow.client.models.SERVER_DEFAULT_ADDRESS
+import org.tfv.deskflow.components.ClientCertificate
+import org.tfv.deskflow.components.ServerDiscovery
 import org.tfv.deskflow.client.util.logging.KLoggingManager
 import org.tfv.deskflow.data.aidl.ConnectionState
 import org.tfv.deskflow.data.aidl.IConnectionService
@@ -74,9 +80,18 @@ import org.tfv.deskflow.logging.LogRecordEvent
 class ConnectionService : Service() {
   companion object {
     private val log = KLoggingManager.forwardingLogger<ConnectionService>()
+
+    private const val AUTO_DISCOVERY_INITIAL_DELAY_MS = 3_000L
+    private const val AUTO_DISCOVERY_RECONNECT_GRACE_MS = 15_000L
+    private const val AUTO_DISCOVERY_INTERVAL_MS = 5_000L
+    private const val AUTO_DISCOVERY_IDLE_INTERVAL_MS = 20_000L
   }
 
   private var connectionStateUpdateJob: Job? = null
+
+  private var autoDiscoveryJob: Job? = null
+
+  private val serverDiscovery by lazy { ServerDiscovery(this) }
 
   private val serviceScope =
     CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -94,7 +109,7 @@ class ConnectionService : Service() {
   private val broadcastExecutor =
     Executors.newSingleThreadExecutor(broadcastThreadFactory)
 
-  private val client = Client()
+  private val client = Client(keyManagersProvider = { ClientCertificate.keyManagers() })
 
   /** The connection state model */
   private lateinit var connectionStateModel: ConnectionStateModel
@@ -203,8 +218,10 @@ class ConnectionService : Service() {
                     address = screenState.server.address
                     port = screenState.server.port
                     useTls = screenState.server.useTls
+                    autoDiscoverDisabled = !screenState.server.autoDiscover
                   }
                 }
+                setupCompleted = true
               }
               .build()
           }
@@ -336,6 +353,75 @@ class ConnectionService : Service() {
 
     connectionStateUpdateJob =
       serviceScope.launch { connectionStateUpdateJobRunnable() }
+
+    autoDiscoveryJob = serviceScope.launch { autoDiscoveryRunnable() }
+  }
+
+  private suspend fun autoDiscoveryRunnable() {
+    delay(AUTO_DISCOVERY_INITIAL_DELAY_MS)
+
+    var disconnectedSince = System.currentTimeMillis()
+    while (currentCoroutineContext().isActive) {
+      val state = connectionStateModel.state.value
+      val currentServer = state.screen.server
+      if (state.isConnected) disconnectedSince = System.currentTimeMillis()
+
+      val hasServer =
+        currentServer.address.isNotBlank() &&
+          currentServer.address != SERVER_DEFAULT_ADDRESS
+      val shouldDiscover =
+        (hasServer || appPrefsStore.data.first().setupCompleted) &&
+          state.isEnabled &&
+          !state.isConnected &&
+          currentServer.autoDiscover &&
+          (!hasServer ||
+            System.currentTimeMillis() - disconnectedSince >
+              AUTO_DISCOVERY_RECONNECT_GRACE_MS)
+
+      var nextDelay = AUTO_DISCOVERY_INTERVAL_MS
+      if (shouldDiscover) {
+        val servers =
+          catch({ serverDiscovery.discover(currentServer.port) }) { err: Throwable ->
+            log.warn { "Server discovery failed: ${err.message}" }
+            emptyList()
+          }
+
+        val best =
+          servers.firstOrNull {
+            it.address == currentServer.address && it.port == currentServer.port
+          } ?: servers.firstOrNull { it.verified } ?: servers.firstOrNull()
+
+        if (best == null) {
+          nextDelay = AUTO_DISCOVERY_IDLE_INTERVAL_MS
+        } else {
+          if (
+            best.address != currentServer.address ||
+              best.port != currentServer.port ||
+              (best.verified && best.useTls != currentServer.useTls)
+          ) {
+            log.info {
+              "Auto connecting to ${best.displayName} (${best.address}:${best.port}, tls=${best.useTls})"
+            }
+            appPrefsStore.updateData { appPrefs ->
+              appPrefs.copy {
+                screen =
+                  screen.copy {
+                    server =
+                      server.copy {
+                        address = best.address
+                        port = best.port
+                        if (best.verified) useTls = best.useTls
+                      }
+                  }
+              }
+            }
+          }
+          disconnectedSince = System.currentTimeMillis()
+        }
+      }
+
+      delay(nextDelay)
+    }
   }
 
   /**
@@ -380,6 +466,9 @@ class ConnectionService : Service() {
 
     connectionStateUpdateJob?.cancel()
     connectionStateUpdateJob = null
+
+    autoDiscoveryJob?.cancel()
+    autoDiscoveryJob = null
 
     serviceScope.cancel()
 

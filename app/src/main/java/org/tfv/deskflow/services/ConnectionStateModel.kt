@@ -65,6 +65,7 @@ class ConnectionStateModel(private val context: Context) {
         currentServer.address == appPrefs.screen.server.address &&
         currentServer.port == appPrefs.screen.server.port &&
         currentServer.useTls == appPrefs.screen.server.useTls &&
+        currentServer.autoDiscover == !appPrefs.screen.server.autoDiscoverDisabled &&
         currentScreen.name == appPrefs.screen.name) {
         
         log.debug { "AppPrefs are unchanged" }
@@ -82,6 +83,7 @@ class ConnectionStateModel(private val context: Context) {
                 address = appPrefs.screen.server.address
                 port = appPrefs.screen.server.port
                 useTls = appPrefs.screen.server.useTls
+                autoDiscover = !appPrefs.screen.server.autoDiscoverDisabled
               }
           )
       )

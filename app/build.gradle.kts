@@ -67,6 +67,17 @@ android {
     versionName = projectVersionName
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     vectorDrawables.useSupportLibrary = true
+
+    ndk { abiFilters += listOf("arm64-v8a") }
+  }
+
+  signingConfigs {
+    getByName("debug") {
+      storeFile = file("deskflow-shared-debug.keystore")
+      storePassword = "android"
+      keyAlias = "androiddebugkey"
+      keyPassword = "android"
+    }
   }
   buildFeatures {
     buildConfig = true
@@ -82,6 +93,7 @@ android {
       buildConfigField("boolean", "DEBUG", "true")
     }
     release {
+      signingConfig = signingConfigs.getByName("debug")
       isMinifyEnabled = false
       proguardFiles(
         getDefaultProguardFile("proguard-android-optimize.txt"),

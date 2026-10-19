@@ -40,8 +40,11 @@ import org.tfv.deskflow.client.util.AbstractDisposable
 import org.tfv.deskflow.client.util.SingletonThreadExecutor
 import org.tfv.deskflow.client.util.disposeOf
 import org.tfv.deskflow.client.util.logging.KLoggingManager
+import javax.net.ssl.KeyManager
 
-class Client() : AbstractDisposable() {
+class Client(
+  private val keyManagersProvider: () -> Array<KeyManager>? = { null },
+) : AbstractDisposable() {
 
   private var socket: FullDuplexSocket? = null
 
@@ -97,6 +100,7 @@ class Client() : AbstractDisposable() {
             isConnected -> {
               log.debug { "Socket is connected already" }
             }
+            System.currentTimeMillis() < retryNotBefore -> {}
             else -> {
               log.debug { "Attempting to connect..." }
               connect()
@@ -108,6 +112,8 @@ class Client() : AbstractDisposable() {
       },
     )
   }
+
+  @Volatile private var retryNotBefore = 0L
 
   private val messageParser = MessageParser()
   private var messageHandler: MessageHandler? = null
@@ -137,6 +143,7 @@ class Client() : AbstractDisposable() {
       }
 
       this.target = target
+      retryNotBefore = 0L
 
       connect()
     }
@@ -162,7 +169,9 @@ class Client() : AbstractDisposable() {
     }
 
     try {
-      val socket = FullDuplexSocket(target.address, target.port, target.useTls)
+      val keyManagers = if (target.useTls) keyManagersProvider() else null
+      val socket =
+        FullDuplexSocket(target.address, target.port, target.useTls, keyManagers)
       messageHandler = MessageHandler(socket, target)
 
       this.socket = socket
@@ -212,6 +221,11 @@ class Client() : AbstractDisposable() {
       is ConnectionEvent.Disconnected -> {
         ackReceived = false
         isScreenActive = false
+      }
+      ConnectionEvent.Rejected -> {
+        ackReceived = false
+        isScreenActive = false
+        retryNotBefore = System.currentTimeMillis() + REJECTED_RETRY_DELAY_MS
       }
     }
   }
@@ -268,5 +282,7 @@ class Client() : AbstractDisposable() {
 
   companion object {
     private val log = KLoggingManager.logger(Client::class.java.simpleName)
+
+    private const val REJECTED_RETRY_DELAY_MS = 10_000L
   }
 }
