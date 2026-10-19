@@ -73,6 +73,15 @@ android {
   }
 
   signingConfigs {
+    // Shared, non-secret debug key, so every build (local & CI) has the same
+    // signature and can be installed as an update.
+    getByName("debug") {
+      storeFile = file("deskflow-shared-debug.keystore")
+      storePassword = "android"
+      keyAlias = "androiddebugkey"
+      keyPassword = "android"
+    }
+
     // Optional release key, provided via environment (e.g. CI secrets)
     val keystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
     if (!keystorePath.isNullOrBlank() && file(keystorePath).exists()) {
